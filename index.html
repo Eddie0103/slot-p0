@@ -83,7 +83,7 @@ body{
 #board{
   flex:1 1 auto; position:relative;
   display:flex; align-items:center; justify-content:center;
-  gap:var(--gap); padding:1.6vw 3vw;
+  gap:var(--gap); padding:0 3vw;        /* 上下留白由 layout() 算，見該處說明 */
   overflow:hidden;
 }
 .reel{
@@ -486,12 +486,34 @@ function layout() {
   const innerW = elBoard.clientWidth - padX;
   const innerH = elBoard.clientHeight - padY;
   const colW = (innerW - gap * (COLS - 1)) / COLS;
-  cellH = innerH / ROWS;
+
+  // 格高：讓「首尾兩列與中帶上下邊界的留白」等於「列與列之間的留白」。
+  // 若直接用 innerH/5，首尾留白只有格間留白的一半，第一列與最後一列
+  // 會緊貼邊界，看起來像被切掉。
+  // 令符號邊長 = t、格高 = c，格間留白 = c - t，首尾各留 (c - t)/2 額外空間：
+  //   innerH = 5c + (c - t) = 6c - t
+  const s = P.symbolScale;
+  let c = (innerH + colW * s) / 6;      // 先假設符號邊長受欄寬限制（t = colW * s）
+  if (c < colW) c = innerH / (6 - s);   // 反之改由格高限制（t = c * s）
+  cellH = c;
+
   const root = document.documentElement.style;
   root.setProperty('--gap', gap + 'px');
   root.setProperty('--cellH', cellH + 'px');
   root.setProperty('--tile', Math.max(8, Math.min(colW, cellH)) + 'px');
-  root.setProperty('--symScale', P.symbolScale);
+  root.setProperty('--symScale', s);
+}
+
+// 中帶尺寸只要變動就重算（iOS 有時會在啟動後才把安全區／視窗高度補上，
+// 只在載入時量一次會量到還沒定案的值）
+if (window.ResizeObserver) {
+  let lastW = 0, lastH = 0;
+  new ResizeObserver(() => {
+    const w = elBoard.clientWidth, h = elBoard.clientHeight;
+    if (w === lastW && h === lastH) return;
+    lastW = w; lastH = h;
+    layout();
+  }).observe(elBoard);
 }
 
 /** 把某欄畫到目前 pos */
