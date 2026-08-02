@@ -7,7 +7,7 @@
  */
 import { test, before, after, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { migratedPool, newAccount, assertRejected } from './_helper.js';
+import { migratedPool, newAccount, assertRejected, seedGrantedCoins, seedPaidCoins, rawLot } from './_helper.js';
 import { ALLOWED_CONVERSIONS, COIN_BUCKETS, targetBucketFor } from '../src/currency-policy.js';
 
 let pool;
@@ -86,6 +86,7 @@ describe('資料層：桶別由來源貨幣強制，不由呼叫端指定', () =
 describe('資料層：桶別的其餘規則', () => {
   test('遊戲幣的每一筆異動都必須說得出桶別', async () => {
     const acc = await newAccount(pool);
+    await seedGrantedCoins(pool, acc, 100);
     await assertRejected(pool,
       `INSERT INTO wallet_txn
          (account_id, currency_type, delta, reason, idempotency_key, balance_after)
@@ -96,28 +97,31 @@ describe('資料層：桶別的其餘規則', () => {
 
   test('其他貨幣不得帶桶別', async () => {
     const acc = await newAccount(pool);
+    const lotId = await rawLot(pool, acc, { points: 100 });
     await assertRejected(pool,
       `INSERT INTO wallet_txn
-         (account_id, currency_type, delta, reason, idempotency_key, balance_after, coin_bucket)
-       VALUES ($1, 'topup_points', 100, 'topup_purchase', $2, 100, 'paid_derived')`,
-      [acc, key()],
+         (account_id, currency_type, delta, reason, idempotency_key, balance_after, coin_bucket, topup_lot_id)
+       VALUES ($1, 'topup_points', 10, 'topup_purchase', $2, 0, 'paid_derived', $3)`,
+      [acc, key(), lotId],
       { constraint: 'wallet_txn_coin_bucket_required' });
   });
 
   test('系統贈送與到期回收只能動贈送桶', async () => {
     const acc = await newAccount(pool);
+    await seedPaidCoins(pool, acc, 500);   // 讓付費桶有餘額，才不會先撞 nonneg
+    await seedGrantedCoins(pool, acc, 500);
     for (const reason of ['grant', 'grant_expired']) {
       const delta = reason === 'grant' ? 100 : -100;
       await assertRejected(pool,
         `INSERT INTO wallet_txn
            (account_id, currency_type, delta, reason, idempotency_key, balance_after, coin_bucket)
-         VALUES ($1, 'game_coins', ${delta}, '${reason}', $2, 100, 'paid_derived')`,
+         VALUES ($1, 'game_coins', ${delta}, '${reason}', $2, 0, 'paid_derived')`,
         [acc, key()],
         { constraint: 'wallet_txn_grant_only_granted' });
       await pool.query(
         `INSERT INTO wallet_txn
            (account_id, currency_type, delta, reason, idempotency_key, balance_after, coin_bucket)
-         VALUES ($1, 'game_coins', ${delta}, '${reason}', $2, 100, 'granted')`,
+         VALUES ($1, 'game_coins', ${delta}, '${reason}', $2, 0, 'granted')`,
         [acc, key()]);
     }
   });

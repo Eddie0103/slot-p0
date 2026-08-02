@@ -9,7 +9,9 @@
  */
 import { test, before, after, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { migratedPool, newAccount, assertRejected, withScratchDatabase } from './_helper.js';
+import { migratedPool, newAccount, assertRejected, withScratchDatabase,
+         uniqKey, seedTickets, seedTopup } from './_helper.js';
+import * as wallet from '../src/wallet.js';
 import { migrateUp } from '../src/migrate.js';
 import {
   CURRENCIES,
@@ -122,22 +124,41 @@ describe('資料層：wallet_txn 原因與貨幣的搭配', () => {
     await withScratchDatabase('legcheck', async scratch => {
       await migrateUp(scratch, { log: () => {} });
       const acc = await newAccount(scratch);
+      // 連帳本套用觸發器一起停掉，這個測試要隔離的是 CHECK 約束本身
       await scratch.query('ALTER TABLE wallet_txn DISABLE TRIGGER wallet_txn_conversion_leg');
+      await scratch.query('ALTER TABLE wallet_txn DISABLE TRIGGER wallet_txn_zz_apply_balance');
+      const { rows: lot } = await scratch.query(
+        `INSERT INTO topup_points (account_id, unit_price_twd, points_purchased, balance, platform)
+         VALUES ($1, 1, 100, 0, 'apple') RETURNING id`, [acc]);
 
+      // 節點檢查（PR #1）指出：draw_tickets 的正向 exchange_in 天生同時違反
+      // reason_matches_currency 與 ticket_reason_matches_source 兩條約束
+      // （exchange_in 不在 draw_ticket_source 列舉裡），無法單獨隔離；
+      // 原本斷言之所以會過只是因為約束的 OID 順序。改為接受兩者其一。
       const cases = [
-        ['draw_tickets', 5, 'exchange_in', "'task'", '任何貨幣都不得兌換成抽獎券'],
-        ['game_coins', -100, 'exchange_out', 'NULL', '遊戲幣不得成為兌換來源'],  // 桶別由下方補上
-        ['topup_points', 100, 'exchange_in', 'NULL', '沒有東西能變回可退費的儲值點數'],
+        { currency:'draw_tickets', delta:5, reason:'exchange_in', src:"'task'",
+          grant:"'campaign-1'", lot:'NULL',
+          accept:['wallet_txn_reason_matches_currency', 'wallet_txn_ticket_reason_matches_source'],
+          why:'任何貨幣都不得兌換成抽獎券（此形狀天生雙違反，無法單獨隔離）' },
+        { currency:'game_coins', delta:-100, reason:'exchange_out', src:'NULL',
+          grant:'NULL', lot:'NULL',
+          accept:['wallet_txn_reason_matches_currency'],
+          why:'遊戲幣不得成為兌換來源' },
+        { currency:'topup_points', delta:100, reason:'exchange_in', src:'NULL',
+          grant:'NULL', lot:`'${lot[0].id}'`,
+          accept:['wallet_txn_reason_matches_currency'],
+          why:'沒有東西能變回可退費的儲值點數' },
       ];
-      for (const [currency, delta, reason, src, why] of cases) {
+      for (const c of cases) {
         const err = await assertRejected(scratch,
           `INSERT INTO wallet_txn
-             (account_id, currency_type, delta, reason, idempotency_key, balance_after, ticket_source, coin_bucket)
-           VALUES ($1, '${currency}', ${delta}, '${reason}', $2, 999, ${src},
-                   ${currency === 'game_coins' ? "'granted'" : 'NULL'})`,
-          [acc, `nolegtrig-${currency}`],
-          { constraint: 'wallet_txn_reason_matches_currency' });
-        assert.ok(err, why);
+             (account_id, currency_type, delta, reason, idempotency_key, balance_after,
+              ticket_source, coin_bucket, ticket_grant_ref, topup_lot_id)
+           VALUES ($1, '${c.currency}', ${c.delta}, '${c.reason}', $2, 999, ${c.src},
+                   ${c.currency === 'game_coins' ? "'granted'" : 'NULL'}, ${c.grant}, ${c.lot})`,
+          [acc, `nolegtrig-${c.currency}`]);
+        assert.ok(c.accept.includes(err.constraint),
+          `${c.why}：應違反 ${c.accept.join(' 或 ')}，實際為 ${err.constraint}`);
       }
     });
   });
@@ -176,23 +197,15 @@ describe('資料層：wallet_txn 原因與貨幣的搭配', () => {
 
   test('允許的兌換走完整兩腳可以成功寫入', async () => {
     const acc = await newAccount(pool);
-    const { rows } = await pool.query(
-      `INSERT INTO currency_conversion
-         (account_id, from_currency, to_currency, from_amount, to_amount)
-       VALUES ($1, 'topup_points', 'game_coins', 100, 1000) RETURNING id`, [acc]);
-    const convId = rows[0].id;
-    const key = `conv-${Date.now()}`;
-    await pool.query(
-      `INSERT INTO wallet_txn
-         (account_id, currency_type, delta, reason, idempotency_key, balance_after, conversion_id)
-       VALUES ($1, 'topup_points', -100, 'exchange_out', $2, 0, $3)`, [acc, key, convId]);
-    await pool.query(
-      `INSERT INTO wallet_txn
-         (account_id, currency_type, delta, reason, idempotency_key, balance_after, conversion_id, coin_bucket)
-       VALUES ($1, 'game_coins', 1000, 'exchange_in', $2, 1000, $3, 'paid_derived')`, [acc, key, convId]);
+    await seedTopup(pool, acc, { points: 100 });
+    const r = await wallet.exchange(pool, {
+      accountId: acc, from: 'topup_points', to: 'game_coins', fromAmount: 100,
+      idempotencyKey: uniqKey('conv'),
+    });
     const { rows: legs } = await pool.query(
-      'SELECT count(*)::int AS n FROM wallet_txn WHERE conversion_id = $1', [convId]);
+      'SELECT count(*)::int AS n FROM wallet_txn WHERE conversion_id = $1', [r.conversionId]);
     assert.equal(legs[0].n, 2);
+    assert.equal(r.coinBucket, 'paid_derived');
   });
 });
 
@@ -213,6 +226,8 @@ describe('資料層：draw_tickets 來源允許清單', () => {
 
       // 模擬日後某人「順手」把來源加進型別
       await scratch.query(`ALTER TYPE draw_ticket_source ADD VALUE 'game_coins_exchange'`);
+      // 停掉帳本守衛，這個測試要隔離的是來源允許清單 CHECK
+      await scratch.query('ALTER TABLE draw_tickets DISABLE TRIGGER draw_tickets_ledger_only');
 
       // 型別放行了，但 CHECK 約束沒有
       await assertRejected(scratch,
@@ -225,14 +240,11 @@ describe('資料層：draw_tickets 來源允許清單', () => {
 
   test('四種合法來源都可以建立券的餘額分桶', async () => {
     const acc = await newAccount(pool);
-    for (const source of DRAW_TICKET_SOURCES) {
-      await pool.query(
-        'INSERT INTO draw_tickets (account_id, source_type, balance) VALUES ($1, $2, 3)',
-        [acc, source]);
-    }
+    for (const source of DRAW_TICKET_SOURCES) await seedTickets(pool, acc, source, 3);
     const { rows } = await pool.query(
-      'SELECT count(*)::int AS n FROM draw_tickets WHERE account_id = $1', [acc]);
-    assert.equal(rows[0].n, 4);
+      'SELECT source_type, balance FROM draw_tickets WHERE account_id = $1 ORDER BY source_type', [acc]);
+    assert.equal(rows.length, 4);
+    assert.ok(rows.every(r => r.balance === 3));
   });
 });
 

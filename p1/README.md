@@ -1,10 +1,8 @@
-# P1 任務 1：資料模型與 migration
+# P1 任務 1～2：資料層與 Wallet 服務
 
-對應 `spec-p1.md` 第七節第 1 項：資料模型、migration、以及禁止箭頭
-（`game_coins → draw_tickets`）的 CHECK 約束與測試。
+對應 `spec-p1.md` 第七節第 1、2 項。
 
-**本目錄只有資料層。** Wallet、Math、GameSession、Disclosure、Auth 屬於任務 2 之後，
-尚未開始。唯一的例外是 `src/currency-policy.js`，說明見下。
+**Math、GameSession、Disclosure、Auth（任務 3 以後）尚未開始。**
 
 ---
 
@@ -22,7 +20,7 @@ export PGDATABASE=slot_p1           # 不存在會自動建立
 npm install
 npm run migrate          # 套用所有未套用的 migration
 npm run migrate:status   # 列出已套用與待套用
-npm test                 # 67 項測試
+npm test                 # 91 項測試
 ```
 
 ---
@@ -35,6 +33,9 @@ npm test                 # 67 項測試
 | `migrations/002_immutability_and_leg_guards.sql` | append-only 觸發器、兌換腳一致性觸發器 |
 | `migrations/003_coin_bucket.sql` | 遊戲幣桶別（付費衍生／贈送），桶別由來源貨幣強制 |
 | `migrations/004_review_fixes.sql` | 節點檢查（PR #1）的修正：TRUNCATE、退費證據凍結、冪等索引、發券來源 |
+| `migrations/005_ledger_derived_balances.sql` | 餘額改由帳本推導，直接寫餘額表一律拒絕 |
+| `src/wallet.js` | Wallet 服務：儲值、兌換、下注、派彩、贈送、查餘額 |
+| `src/ticket-grant.js` | 發券服務。刻意與 wallet 分離，物理上讀不到 gameplay 狀態 |
 | `src/currency-policy.js` | 允許箭頭的唯一真實來源＋服務層守門函式 |
 | `src/migrate.js` | migration 執行器 |
 | `src/db.js` | 連線設定 |
@@ -42,6 +43,8 @@ npm test                 # 67 項測試
 | `test/policy-sync.test.js` | SQL 與 JS 兩份白名單的防漂移測試 |
 | `test/schema-guards.test.js` | 期限、隔離、append-only、冪等、餘額等約束 |
 | `test/coin-bucket.test.js` | 遊戲幣桶別的資料層與服務層測試 |
+| `test/wallet.test.js` | 冪等、消耗順序、先進先出、派彩桶別 |
+| `test/ticket-grant.test.js` | 發券服務，含「原始碼不得提及 gameplay 狀態」的結構測試 |
 | `test/review-fixes.test.js` | 節點檢查修正的驗證 |
 | `test/migration.test.js` | migration 執行器本身 |
 
@@ -72,6 +75,22 @@ npm test                 # 67 項測試
 
 ---
 
+## 餘額是帳本的投影，不是可以直接寫的欄位
+
+005 之後，`game_coins`、`draw_tickets`、`topup_points.balance` 都**只能**被
+`wallet_txn` 的觸發器寫。任何直接 `INSERT`／`UPDATE`／`DELETE` 都會被
+`balance_not_derived_violation` 拒絕。
+
+由此得到三件事：
+
+- 「餘額 = 該桶所有 `delta` 的總和」恆成立，有測試逐桶驗證
+- `balance_after` 由資料庫回填，服務層填假值會被覆蓋
+- 餘額不足會在餘額表的 nonneg CHECK 上直接爆掉——Wallet 服務算錯也不會超扣
+
+節點檢查（PR #1）實測「可以直接把券灌到 50 萬且帳上無紀錄」，這一版關掉了。
+
+---
+
 ## 遊戲幣的桶別
 
 `draw_tickets → game_coins` 換來的幣一律落 `granted`（贈送桶），
@@ -82,8 +101,10 @@ npm test                 # 67 項測試
 會比對兌換表頭的來源貨幣，謊報就丟 `coin_bucket_violation`。
 這件事影響履約保證要提列多少錢，記錯是財務問題不是程式問題，所以不能只靠服務層自律。
 
-`bet` 與 `payout` 落哪個桶尚未決定，屬於任務 2 的消耗順序邏輯，
-資料層只強制「必須說得出桶別」。
+**下注**依法規預設「先扣贈送、後扣付費」，跨桶時落兩列帳（共用冪等鍵，桶別不同）。
+
+**派彩一律落贈送桶。** 玩家沒有為這些幣付過錢，記成付費衍生等於把它拉進
+履約保證範圍。與「抽獎券換來的幣記為贈送」同理。
 
 ---
 
@@ -111,8 +132,7 @@ SQL 的 CHECK 約束與 JS 的白名單如果各寫各的，遲早會有人只�
   `TRUNCATE` 是 Postgres 可單獨授予的獨立權限，收回前兩者不會一併收掉它——
   節點檢查（PR #1）就是踩在這一點上：列級觸發器對 `TRUNCATE` 不觸發，
   修正前一句 `TRUNCATE` 就能清空整份法定稽核帳。已於 004 補上 statement 級觸發器。
-- **餘額欄位還不是由帳本推導。** `game_coins`、`draw_tickets`、`topup_points.balance`
-  可以被直接 UPDATE 而不留 `wallet_txn`。「wallet_txn 是所有幣異動的唯一入口」
-  目前是**服務紀律，不是 schema 保證**——要真正由資料庫強制，唯一的路是任務 2
-  讓餘額由 `wallet_txn` 推導。`topup_points` 的證據欄位已於 004 凍結，
-  但餘額本身仍可被帳外灌入。
+- **`granted_expires_at` 只有一個時間戳。** 一個帳號若有多批期限不同的贈送幣，
+  現在的 schema 表達不了。P1 不設任何贈送幣期限（欄位保留給 P2 的 live-ops），
+  真的要用時得先改成分批結構。
+- **贈送幣到期回收沒有排程。** `grant_expired` 這個原因存在，但沒有跑它的東西。

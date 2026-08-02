@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import pg from 'pg';
 import { DB, MAINTENANCE_DATABASE, createPool, ensureDatabase } from '../src/db.js';
 import { migrateUp } from '../src/migrate.js';
+import * as wallet from '../src/wallet.js';
+import { grantTickets } from '../src/ticket-grant.js';
 
 /** 主測試資料庫：套用 migration 後直接使用。 */
 export async function migratedPool() {
@@ -74,4 +76,54 @@ export async function assertRejected(pool, sql, params, opts = {}) {
       `錯誤訊息應包含「${opts.messageIncludes}」，實際為：${err.message}`);
   }
   return err;
+}
+
+
+/* ===========================================================================
+ * 建立測試資料的工具
+ *
+ * 005 之後餘額只能由帳本推導，測試不能再直接寫餘額表——這正是要保護的性質。
+ * 需要餘額的測試一律經由 Wallet 服務建立。
+ * ===========================================================================*/
+
+let seq = 0;
+/** 產生一把不會撞的冪等鍵。 */
+export const uniqKey = (prefix = 'k') => `${prefix}-${process.pid}-${Date.now()}-${++seq}`;
+
+/** 建一筆購買紀錄並灌入點數，回傳 { lotId, points }。 */
+export async function seedTopup(pool, accountId, { points = 1000, unitPrice = 1, platform = 'apple' } = {}) {
+  return wallet.purchaseTopup(pool, {
+    accountId, points, unitPriceTwd: unitPrice, platform, idempotencyKey: uniqKey('seed-topup'),
+  });
+}
+
+/** 贈送遊戲幣（落贈送桶）。 */
+export async function seedGrantedCoins(pool, accountId, amount) {
+  return wallet.grantCoins(pool, { accountId, amount, idempotencyKey: uniqKey('seed-grant') });
+}
+
+/** 儲值後兌換，讓帳號有付費衍生的遊戲幣。 */
+export async function seedPaidCoins(pool, accountId, coins) {
+  const rate = wallet.rateFor('topup_points', 'game_coins');
+  const points = Math.ceil(coins / rate);
+  await seedTopup(pool, accountId, { points });
+  return wallet.exchange(pool, {
+    accountId, from: 'topup_points', to: 'game_coins', fromAmount: points,
+    idempotencyKey: uniqKey('seed-exchange'),
+  });
+}
+
+/** 發券。 */
+export async function seedTickets(pool, accountId, source, quantity) {
+  return grantTickets(pool, {
+    accountId, source, quantity, campaignRef: 'seed-campaign', idempotencyKey: uniqKey('seed-ticket'),
+  });
+}
+
+/** 只建一筆空的購買紀錄（餘額 0），給需要 lot id 但要自己控制帳本的測試。 */
+export async function rawLot(pool, accountId, { points = 100, unitPrice = 1, platform = 'apple' } = {}) {
+  const { rows } = await pool.query(
+    `INSERT INTO topup_points (account_id, unit_price_twd, points_purchased, balance, platform)
+     VALUES ($1,$2,$3,0,$4) RETURNING id`, [accountId, unitPrice, points, platform]);
+  return rows[0].id;
 }
