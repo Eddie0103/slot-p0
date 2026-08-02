@@ -24,10 +24,20 @@
   --gap: 8px;         /* 欄間距，對應參數 reelGapPx */
   --symScale: .8;     /* 符號佔格子比例，對應參數 symbolScale */
 
-  /* 安全區：加到主畫面後狀態列（瀏海／動態島）會蓋在內容上方，頂帶必須讓開。
-     這裡預設 0，實際值由 applySafeTop() 實測後以 px 寫入——
-     iOS standalone 下 env(safe-area-inset-top) 常回報 0，不能只靠 CSS。 */
+  /* 安全區：加到主畫面後狀態列（瀏海／動態島）與底部 home indicator 可能蓋在
+     內容上，頂帶與底部控制必須讓開。這裡預設 0，實際值由 applySafeInsets()
+     實測後以 px 寫入——iOS standalone 下 env() 常回報 0，不能只靠 CSS。 */
   --safeTop: 0px;
+  --safeBot: 0px;
+  /* 底帶控制尺寸：同時受寬度與高度約束，寬螢幕（如 iPad 直屏）才不會
+     大到把下注列頂出底帶。SPIN 直徑仍恆 ≥22vw 的硬性下限。 */
+  --spinD: max(23vw, min(30vw, 16dvh));   /* 下限留在 spec 硬性 22vw 之上，不可被高度約束壓破 */
+  --spinR: calc(var(--spinD) / 2);
+  --autoD: min(16vw, 9dvh);
+  --betD:  min(13vw, 7dvh);
+  /* SPIN 圓心距視窗底部的距離。硬性要求 ≤15dvh，這裡取
+     安全區 + 1.5dvh 呼吸空間 + 半徑，讓按鈕盡量貼近底部又不壓到 home indicator。 */
+  --spinCy: calc(var(--safeBot) + 1.5dvh + var(--spinR));
 
   --bg:#0b0d12;
   --band:#11151d;
@@ -121,37 +131,38 @@ body{
   height:28dvh; flex:0 0 28dvh; position:relative;
   background:var(--band); border-top:1px solid var(--line);
 }
+/* 下注列掛在 SPIN 圓上緣之上，兩者不可能重疊 */
 #betRow{
-  position:absolute; top:2.2dvh; left:0; right:0;
+  position:absolute; bottom:calc(var(--spinCy) + var(--spinR) + 1dvh); left:0; right:0;
   display:flex; align-items:center; justify-content:center; gap:4vw;
 }
 .betBtn{
-  width:13vw; height:13vw; border-radius:50%;
-  font-size:6vw; font-weight:700; line-height:1;
+  width:var(--betD); height:var(--betD); border-radius:50%;
+  font-size:calc(var(--betD) * .46); font-weight:700; line-height:1;
   background:#232b3b; color:var(--fg); border:1px solid var(--line);
 }
 .betBtn:disabled{ opacity:.35; }
-#betWrap{ text-align:center; min-width:26vw; }
-#betLabel{ font-size:2.6vw; color:var(--dim); letter-spacing:.15em; }
-#bet{ font-size:6vw; font-weight:700; font-variant-numeric:tabular-nums; }
+#betWrap{ text-align:center; min-width:calc(var(--betD) * 2); }
+#betLabel{ font-size:calc(var(--betD) * .2); color:var(--dim); letter-spacing:.15em; }
+#bet{ font-size:calc(var(--betD) * .46); font-weight:700; font-variant-numeric:tabular-nums; }
 
-/* SPIN：圓心距螢幕底部 12dvh（≤15dvh），水平置中，直徑 26vw（≥22vw） */
+/* SPIN：圓心距視窗底部 --spinCy（≤15dvh），水平置中，直徑 --spinD（≥22vw） */
 #spin{
-  position:absolute; left:50%; bottom:calc(12dvh - 13vw);
+  position:absolute; left:50%; bottom:calc(var(--safeBot) + 1.5dvh);
   transform:translateX(-50%);
-  width:26vw; height:26vw; border-radius:50%;
-  font-size:5.2vw; font-weight:800; letter-spacing:.1em;
+  width:var(--spinD); height:var(--spinD); border-radius:50%;
+  font-size:calc(var(--spinD) * .19); font-weight:800; letter-spacing:.1em;
   color:#20130a; background:radial-gradient(circle at 35% 30%, #ffd08a, var(--accent) 60%, #d97b12);
   border:none; box-shadow:0 1vw 3vw rgba(0,0,0,.5);
 }
 #spin:active{ transform:translateX(-50%) scale(.94); }
 #spin.busy{ filter:grayscale(.55) brightness(.75); }
 
-/* AUTO：同樣落在底帶內，右側單手拇指可及 */
+/* AUTO：與 SPIN 同圓心高度，落在底帶內，右側單手拇指可及 */
 #auto{
-  position:absolute; right:7vw; bottom:calc(12dvh - 8vw);
-  width:16vw; height:16vw; border-radius:50%;
-  font-size:3.4vw; font-weight:700;
+  position:absolute; right:7vw; bottom:calc(var(--spinCy) - var(--autoD) / 2);
+  width:var(--autoD); height:var(--autoD); border-radius:50%;
+  font-size:calc(var(--autoD) * .21); font-weight:700;
   background:#232b3b; color:var(--dim); border:1px solid var(--line);
 }
 #auto.on{ background:var(--accent2); color:#06231a; border-color:var(--accent2); }
@@ -196,7 +207,7 @@ body{
 .overlay{
   position:fixed; inset:0; z-index:50;
   display:flex; flex-direction:column; align-items:center; justify-content:center;
-  text-align:center; padding:calc(8vw + var(--safeTop)) 8vw 8vw; gap:3vw;
+  text-align:center; padding:calc(8vw + var(--safeTop)) 8vw calc(8vw + var(--safeBot)); gap:3vw;
 }
 #start{ background:#0b0d12; }
 #start h1{ font-size:8vw; margin:0; }
@@ -452,28 +463,36 @@ function buildBoard() {
 }
 
 /**
- * 量出狀態列安全區高度並寫進 --safeTop。
+ * 量出上下安全區並寫進 --safeTop / --safeBot。
  * 為什麼不能只寫 CSS：iOS 加到主畫面（standalone）且狀態列為半透明時，
- * env(safe-area-inset-top) 實測回報 0，頂帶就會被時間／訊號／電量蓋住。
+ * env(safe-area-inset-*) 實測回報 0，頂帶就會被時間／訊號／電量蓋住。
  * 對策：先用探針直接量 env()，量得到就用；量不到而畫面確實鋪滿整個螢幕
- * （代表狀態列一定疊在內容上），就依螢幕高度推估狀態列高度。
+ * （代表狀態列與 home indicator 一定疊在內容上），就依螢幕高度推估。
+ * 反之若 iOS 已自行把網頁縮排到安全區內（畫面比螢幕矮），兩者都是 0，
+ * 此時底部那條黑邊是系統保留區，網頁畫不到，也不需要再讓位。
  */
-function applySafeTop() {
+function applySafeInsets() {
   const probe = document.createElement('div');
-  probe.style.cssText = 'position:fixed;top:0;left:0;width:1px;visibility:hidden;' +
-                        'pointer-events:none;height:env(safe-area-inset-top,0px)';
+  probe.style.cssText = 'position:fixed;top:0;left:0;width:1px;visibility:hidden;pointer-events:none';
   document.body.appendChild(probe);
-  let inset = Math.round(probe.getBoundingClientRect().height);
+  const measure = side => {
+    probe.style.height = 'env(safe-area-inset-' + side + ',0px)';
+    return Math.round(probe.getBoundingClientRect().height);
+  };
+  let top = measure('top'), bot = measure('bottom');
   probe.remove();
 
   const standalone = navigator.standalone === true ||
     (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
   const fullBleed = !!window.screen && window.innerHeight >= window.screen.height - 2;
-  if (inset === 0 && standalone && fullBleed) {
+  if (standalone && fullBleed) {
     const h = window.screen.height;
-    inset = h >= 852 ? 59 : (h >= 780 ? 47 : 20);   // 動態島 / 瀏海 / 無瀏海
+    if (top === 0) top = h >= 852 ? 59 : (h >= 780 ? 47 : 20);   // 動態島 / 瀏海 / 無瀏海
+    if (bot === 0) bot = h >= 780 ? 34 : 0;                      // 有無 home indicator
   }
-  document.documentElement.style.setProperty('--safeTop', inset + 'px');
+  const root = document.documentElement.style;
+  root.setProperty('--safeTop', top + 'px');
+  root.setProperty('--safeBot', bot + 'px');
 }
 
 /** 版面度量：格高、符號基準邊長、欄間距 */
@@ -877,7 +896,7 @@ elAuto.addEventListener('click', () => {
   if (!spinning) { sfx.tick(); spin(); }
 });
 
-const relayout = () => { applySafeTop(); layout(); };
+const relayout = () => { applySafeInsets(); layout(); };
 window.addEventListener('resize', relayout);
 window.addEventListener('orientationchange', () => setTimeout(relayout, 120));
 
@@ -900,7 +919,7 @@ $('start').addEventListener('click', function onStart() {
    ============================================================ */
 buildBoard();
 buildPanel();
-applySafeTop();
+applySafeInsets();
 layout();
 drawBalance(balance);
 drawBet();
