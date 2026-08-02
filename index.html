@@ -225,6 +225,16 @@ body{
 
 /* 剪貼簿失敗時的手動複製後備 */
 #dump{ background:#000e; z-index:70; display:none; }
+#dumpTitle{ font-size:3vw; color:var(--dim); }
+#dumpActs{ display:flex; gap:3vw; }
+#statsBox{
+  display:grid; grid-template-columns:1fr auto auto; gap:.8vw 4vw;
+  font-size:2.8vw; align-items:center;
+}
+#statsBox .sh{ font-size:2.4vw; color:var(--dim); letter-spacing:.05em; }
+#statsBox .sk{ color:var(--dim); }
+#statsBox .sv{ text-align:right; font-variant-numeric:tabular-nums; color:var(--fg); }
+#statsBox .sv.hot{ color:var(--accent); }
 #dump textarea{
   width:100%; flex:1 1 auto; font-size:3vw; font-family:ui-monospace,monospace;
   background:#0d1017; color:var(--fg); border:1px solid var(--line); border-radius:2vw; padding:2vw;
@@ -284,8 +294,11 @@ body{
   <div id="paramList"></div>
   <div class="psec">符號權重（影響出現機率與賠付倍數）</div>
   <div id="weightList"></div>
+  <div class="psec">節奏統計（唯讀，不參與結算）</div>
+  <div id="statsBox"></div>
   <div class="pacts">
     <button class="pbtn act" id="copyParams" type="button">複製目前參數</button>
+    <button class="pbtn" id="pasteParams" type="button">貼上參數</button>
     <button class="pbtn" id="exportLog" type="button">匯出紀錄</button>
     <span id="logCount" style="font-size:2.8vw;color:var(--dim);align-self:center"></span>
   </div>
@@ -306,8 +319,12 @@ body{
 
 <!-- 剪貼簿後備顯示 -->
 <div id="dump" class="overlay">
-  <textarea id="dumpText" readonly></textarea>
-  <button class="pbtn" id="dumpClose" type="button">關閉</button>
+  <div id="dumpTitle"></div>
+  <textarea id="dumpText"></textarea>
+  <div id="dumpActs">
+    <button class="pbtn act" id="dumpApply" type="button">套用</button>
+    <button class="pbtn" id="dumpClose" type="button">關閉</button>
+  </div>
 </div>
 
 <div id="toast"></div>
@@ -773,6 +790,9 @@ function snapshot() {
   return o;
 }
 
+const paramCtl = {};   // 參數 key -> 回寫用的控制項
+const weightCtl = [];  // 符號索引 -> 回寫用的控制項
+
 function buildPanel() {
   const list = $('paramList');
   PARAM_DEFS.forEach(d => {
@@ -787,10 +807,9 @@ function buildPanel() {
       box.type = 'checkbox'; box.checked = d.def;
       const out = document.createElement('output');
       out.textContent = d.def ? 'on' : 'off';
-      box.addEventListener('change', () => {
-        P[d.k] = box.checked;                 // 即時生效
-        out.textContent = box.checked ? 'on' : 'off';
-      });
+      const sync = () => { P[d.k] = box.checked; out.textContent = box.checked ? 'on' : 'off'; };
+      box.addEventListener('change', sync);   // 即時生效
+      paramCtl[d.k] = { set: v => { box.checked = !!v; sync(); } };
       row.appendChild(box); row.appendChild(out);
     } else {
       const rng = document.createElement('input');
@@ -798,11 +817,16 @@ function buildPanel() {
       const out = document.createElement('output');
       const show = v => out.textContent = (d.step < 1 ? Number(v).toFixed(2) : v) + (d.u || '');
       show(d.def);
-      rng.addEventListener('input', () => {
+      const sync = () => {
         P[d.k] = parseFloat(rng.value);        // 即時生效，不需重轉、不需重載
         show(rng.value);
         if (d.k === 'reelGapPx' || d.k === 'symbolScale') layout();
-      });
+      };
+      rng.addEventListener('input', sync);
+      paramCtl[d.k] = { set: v => {            // 夾在 spec 定義的範圍內，超出就取邊界
+        rng.value = Math.min(d.max, Math.max(d.min, v));
+        sync();
+      } };
       row.appendChild(rng); row.appendChild(out);
     }
     list.appendChild(row);
@@ -818,15 +842,46 @@ function buildPanel() {
     rng.type = 'range'; rng.min = WEIGHT_MIN; rng.max = WEIGHT_MAX; rng.step = 1; rng.value = W[i];
     const out = document.createElement('output');
     out.textContent = W[i];
-    rng.addEventListener('input', () => {
+    const sync = () => {
       W[i] = parseInt(rng.value, 10);          // 即時生效
       out.textContent = rng.value;
       refreshMultipliers();
-    });
+    };
+    rng.addEventListener('input', sync);
+    weightCtl[i] = { set: v => {
+      rng.value = Math.min(WEIGHT_MAX, Math.max(WEIGHT_MIN, Math.round(v)));
+      sync();
+    } };
     row.appendChild(lab); row.appendChild(rng); row.appendChild(out);
     wlist.appendChild(row);
   });
   refreshMultipliers();
+}
+
+/**
+ * 把一份參數 JSON 套進面板（「複製目前參數」的反向操作）。
+ * 只認得 PARAM_DEFS 與 symbolWeights，其餘鍵忽略；數值一律夾在 spec 範圍內。
+ */
+function applyParams(text) {
+  let o;
+  try { o = JSON.parse(text); } catch (e) { toast('不是合法 JSON'); return false; }
+  if (!o || typeof o !== 'object') { toast('不是合法 JSON'); return false; }
+  let n = 0;
+  PARAM_DEFS.forEach(d => {
+    if (o[d.k] === undefined) return;
+    const v = d.bool ? !!o[d.k] : parseFloat(o[d.k]);
+    if (!d.bool && !isFinite(v)) return;
+    paramCtl[d.k].set(v); n++;
+  });
+  if (o.symbolWeights && typeof o.symbolWeights === 'object') {
+    SYMBOLS.forEach((sym, i) => {
+      const v = parseFloat(o.symbolWeights[sym.id]);
+      if (isFinite(v)) { weightCtl[i].set(v); n++; }
+    });
+  }
+  layout();
+  toast(n ? '已套用 ' + n + ' 項參數' : '沒有可辨識的參數');
+  return n > 0;
 }
 
 function refreshMultipliers() {
@@ -835,9 +890,63 @@ function refreshMultipliers() {
   nodes.forEach((n, i) => { n.textContent = (tw / W[i]).toFixed(1); });
 }
 
-function updateLogCount() { $('logCount').textContent = records.length + ' 筆'; }
+function updateLogCount() {
+  $('logCount').textContent = records.length + ' 筆';
+  renderStats();
+}
+
+/** 從一段紀錄算出節奏指標。純唯讀統計，不參與任何結算。 */
+function statsOf(list) {
+  const n = list.length;
+  if (!n) return null;
+  let wins = 0, staked = 0, paid = 0, maxDry = 0, dry = 0;
+  for (const r of list) {
+    staked += r.bet; paid += r.winAmount;
+    if (r.won) { wins++; if (dry > maxDry) maxDry = dry; dry = 0; }
+    else dry++;
+  }
+  if (dry > maxDry) maxDry = dry;
+  return { n, wins, hit: wins / n, gap: wins ? n / wins : 0,
+           maxDry, cur: dry, rtp: staked ? paid / staked : 0 };
+}
+
+const STAT_WINDOW = 100;   // 「最近」視窗大小；調完權重後約這麼多把就會收斂到新節奏
+const STAT_ROWS = [
+  ['中獎率',        s => (s.hit * 100).toFixed(1) + '%'],
+  ['平均幾把中一次', s => s.wins ? s.gap.toFixed(2) : '—'],
+  ['最長連續未中',   s => s.maxDry + ' 把'],
+  ['目前連續未中',   s => s.cur + ' 把'],
+  ['實測回收率',     s => (s.rtp * 100).toFixed(1) + '%'],
+];
+
+function renderStats() {
+  const box = $('statsBox');
+  const all = statsOf(records);
+  if (!all) { box.innerHTML = '<span class="sk">尚無紀錄，轉幾把就會出現</span>'; return; }
+  const recent = statsOf(records.slice(-STAT_WINDOW));
+  const cells = ['<span class="sh"></span>',
+                 '<span class="sh sv">最近 ' + recent.n + '</span>',
+                 '<span class="sh sv">全部 ' + all.n + '</span>'];
+  STAT_ROWS.forEach(([label, fmt]) => {
+    cells.push('<span class="sk">' + label + '</span>');
+    cells.push('<span class="sv hot">' + fmt(recent) + '</span>');
+    cells.push('<span class="sv">' + fmt(all) + '</span>');
+  });
+  box.innerHTML = cells.join('');
+}
 
 /* ---- 輸出：優先寫剪貼簿，失敗則開後備視窗讓使用者手動複製 ---- */
+/** 開啟全螢幕文字框：editable=false 供手動複製，true 供貼上參數 */
+function openDump(text, editable, title) {
+  const ta = $('dumpText');
+  ta.value = text;
+  ta.readOnly = !editable;
+  $('dumpApply').style.display = editable ? '' : 'none';
+  $('dumpTitle').textContent = title;
+  $('dump').classList.add('open');
+  if (editable) ta.focus(); else ta.select();
+}
+
 function output(text, okMsg) {
   const fallback = () => {
     try {
@@ -850,9 +959,7 @@ function output(text, okMsg) {
       document.body.removeChild(ta);
       if (ok) { toast(okMsg); return; }
     } catch (e) { /* 忽略，走手動複製 */ }
-    $('dumpText').value = text;
-    $('dump').classList.add('open');
-    $('dumpText').select();
+    openDump(text, false, '無法寫入剪貼簿，請長按選取複製');
   };
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(text).then(() => toast(okMsg)).catch(fallback);
@@ -870,7 +977,10 @@ function toast(msg) {
 /* ============================================================
    9. 事件綁定
    ============================================================ */
-$('panelToggle').addEventListener('click', () => elPanel.classList.toggle('open'));
+$('panelToggle').addEventListener('click', () => {
+  elPanel.classList.toggle('open');
+  if (elPanel.classList.contains('open')) renderStats();
+});
 $('panelClose').addEventListener('click', () => elPanel.classList.remove('open'));
 $('muteBtn').addEventListener('click', () => {
   muted = !muted;
@@ -883,6 +993,12 @@ $('copyParams').addEventListener('click', () => {
 $('exportLog').addEventListener('click', () => {
   output(JSON.stringify({ exportedAt: new Date().toISOString(), count: records.length, records }, null, 2),
          '紀錄已複製（' + records.length + ' 筆）');
+});
+$('pasteParams').addEventListener('click', () => {
+  openDump('', true, '貼上「複製目前參數」產生的 JSON，再按套用');
+});
+$('dumpApply').addEventListener('click', () => {
+  if (applyParams($('dumpText').value)) $('dump').classList.remove('open');
 });
 $('dumpClose').addEventListener('click', () => $('dump').classList.remove('open'));
 
