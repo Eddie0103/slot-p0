@@ -78,8 +78,9 @@ describe('004-3 冪等索引與跨桶下注', () => {
     const r = await wallet.placeBet(pool, { accountId: acc, amount: 100, idempotencyKey: key });
     assert.deepEqual({ ...r, replayed: undefined },
       { fromGranted: 60, fromPaid: 40, replayed: undefined });
+    // 帳本上的鍵帶有操作命名空間
     const { rows } = await pool.query(
-      'SELECT count(*)::int AS n FROM wallet_txn WHERE idempotency_key = $1', [key]);
+      'SELECT count(*)::int AS n FROM wallet_txn WHERE idempotency_key = $1', [`bet:${key}`]);
     assert.equal(rows[0].n, 2);
   });
 
@@ -215,5 +216,33 @@ describe('005 餘額只能由帳本推導（節點檢查的「應該修 1(B)」�
        VALUES ($1,'game_coins',50,'grant',$2, 999999, 'granted')
        RETURNING balance_after`, [acc, uniqKey('fake')]);
     assert.equal(rows[0].balance_after, 150, '應為實際餘額，不是傳進去的 999999');
+  });
+});
+
+describe('006 餘額守衛不可偽造', () => {
+  test('自己把 app.ledger_apply 設成 1 也灌不了餘額', async () => {
+    const acc = await newAccount(pool);
+    await seedTickets(pool, acc, 'task', 1);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`SELECT set_config('app.ledger_apply', '1', true)`);
+      let err = null;
+      try {
+        await client.query(
+          `UPDATE draw_tickets SET balance = balance + 500000 WHERE account_id = $1`, [acc]);
+      } catch (e) { err = e; }
+      await client.query('ROLLBACK');
+      assert.ok(err, '偽造旗標後仍必須被擋下');
+      assert.match(err.message, /balance_not_derived_violation/);
+    } finally { client.release(); }
+  });
+
+  test('守衛用的是 pg_trigger_depth()，不是可被設定的 GUC', async () => {
+    const { rows } = await pool.query(
+      `SELECT prosrc FROM pg_proc WHERE proname = 'reject_direct_balance_write'`);
+    assert.match(rows[0].prosrc, /pg_trigger_depth/);
+    assert.ok(!/current_setting/.test(rows[0].prosrc),
+      '守衛不得依賴 current_setting：GUC 任何連線都能自己設');
   });
 });

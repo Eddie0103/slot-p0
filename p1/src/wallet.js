@@ -47,15 +47,27 @@ export class InsufficientFundsError extends WalletError {
  * ==========================================================================*/
 
 /**
+ * 冪等鍵要加上操作命名空間再存進帳本。
+ *
+ * 沒有命名空間的話，呼叫端把同一把鍵拿去做不同操作（例如先 bet 後 payout）
+ * 會被當成回放：第二次操作不會執行，卻回報成功，而且回傳的是前一個操作的
+ * 欄位。錢的邏輯上這是靜默的錯帳，不是效能問題。
+ */
+const nsKey = (op, key) => `${op}:${key}`;
+
+function assertKey(key) {
+  if (!key || typeof key !== 'string' || !key.trim()) {
+    throw new WalletError('bad_idempotency_key', '冪等鍵不可為空');
+  }
+}
+
+/**
  * 以冪等鍵包住一段操作。
  *
  * 先取交易級 advisory lock，避免同一把鍵並行進來各做一次；
  * 再查帳本上有沒有這把鍵的紀錄，有就直接回放先前的結果，不重做。
  */
 async function idempotent(client, key, replay, run) {
-  if (!key || typeof key !== 'string' || !key.trim()) {
-    throw new WalletError('bad_idempotency_key', '冪等鍵不可為空');
-  }
   await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [key]);
   const { rows } = await client.query(
     `SELECT id, currency_type, delta, reason, balance_after, coin_bucket, ticket_source,
@@ -101,8 +113,10 @@ function translate(err) {
  */
 export async function purchaseTopup(pool, { accountId, points, unitPriceTwd, platform, idempotencyKey }) {
   if (!(points > 0)) throw new WalletError('bad_amount', '購買點數必須為正');
+  assertKey(idempotencyKey);
+  const key = nsKey('topup', idempotencyKey);
   return withTransaction(pool, async client =>
-    idempotent(client, idempotencyKey,
+    idempotent(client, key,
       rows => ({ lotId: rows[0].topup_lot_id, points: rows[0].delta, balance: rows[0].balance_after }),
       async () => {
         const { rows } = await client.query(
@@ -113,7 +127,7 @@ export async function purchaseTopup(pool, { accountId, points, unitPriceTwd, pla
         const lotId = rows[0].id;
         const txn = await writeTxn(client, {
           accountId, currency: 'topup_points', delta: points, reason: 'topup_purchase',
-          idempotencyKey, topupLotId: lotId,
+          idempotencyKey: key, topupLotId: lotId,
         });
         return { lotId, points, balance: txn.balance_after };
       }));
@@ -127,12 +141,14 @@ export async function purchaseTopup(pool, { accountId, points, unitPriceTwd, pla
 export async function exchange(pool, { accountId, from, to, fromAmount, ticketSource, idempotencyKey }) {
   assertConversionAllowed(from, to);
   if (!(fromAmount > 0)) throw new WalletError('bad_amount', '兌換數量必須為正');
+  assertKey(idempotencyKey);
   const rate = rateFor(from, to);
   const bucket = targetBucketFor(from, to);
+  const key = nsKey('exchange', idempotencyKey);
 
   return withTransaction(pool, async client => {
     try {
-      return await idempotent(client, idempotencyKey,
+      return await idempotent(client, key,
         rows => {
           const inLeg = rows.find(r => r.reason === 'exchange_in');
           return { toAmount: inLeg.delta, conversionId: inLeg.conversion_id, coinBucket: inLeg.coin_bucket };
@@ -149,18 +165,18 @@ export async function exchange(pool, { accountId, from, to, fromAmount, ticketSo
           if (from === 'topup_points') {
             await spendTopupFifo(client, {
               accountId, amount: fromAmount, reason: 'exchange_out',
-              idempotencyKey, conversionId,
+              idempotencyKey: key, conversionId,
             });
           } else {
             await writeTxn(client, {
               accountId, currency: from, delta: -fromAmount, reason: 'exchange_out',
-              idempotencyKey, conversionId, ticketSource,
+              idempotencyKey: key, conversionId, ticketSource,
             });
           }
 
           await writeTxn(client, {
             accountId, currency: to, delta: toAmount, reason: 'exchange_in',
-            idempotencyKey, conversionId, coinBucket: bucket,
+            idempotencyKey: key, conversionId, coinBucket: bucket,
           });
           return { toAmount, conversionId, coinBucket: bucket };
         });
@@ -206,9 +222,11 @@ async function spendTopupFifo(client, { accountId, amount, reason, idempotencyKe
  */
 export async function placeBet(pool, { accountId, amount, idempotencyKey }) {
   if (!(amount > 0)) throw new WalletError('bad_amount', '下注額必須為正');
+  assertKey(idempotencyKey);
+  const key = nsKey('bet', idempotencyKey);
   return withTransaction(pool, async client => {
     try {
-      return await idempotent(client, idempotencyKey,
+      return await idempotent(client, key,
         rows => ({
           fromGranted: -(rows.find(r => r.coin_bucket === 'granted')?.delta ?? 0) || 0,
           fromPaid: -(rows.find(r => r.coin_bucket === 'paid_derived')?.delta ?? 0) || 0,
@@ -229,13 +247,13 @@ export async function placeBet(pool, { accountId, amount, idempotencyKey }) {
           if (fromGranted > 0) {
             await writeTxn(client, {
               accountId, currency: 'game_coins', delta: -fromGranted, reason: 'bet',
-              idempotencyKey, coinBucket: 'granted',
+              idempotencyKey: key, coinBucket: 'granted',
             });
           }
           if (fromPaid > 0) {
             await writeTxn(client, {
               accountId, currency: 'game_coins', delta: -fromPaid, reason: 'bet',
-              idempotencyKey, coinBucket: 'paid_derived',
+              idempotencyKey: key, coinBucket: 'paid_derived',
             });
           }
           return { fromGranted, fromPaid };
@@ -252,13 +270,15 @@ export async function placeBet(pool, { accountId, amount, idempotencyKey }) {
  */
 export async function creditPayout(pool, { accountId, amount, idempotencyKey }) {
   if (!(amount > 0)) throw new WalletError('bad_amount', '派彩額必須為正');
+  assertKey(idempotencyKey);
+  const key = nsKey('payout', idempotencyKey);
   return withTransaction(pool, async client =>
-    idempotent(client, idempotencyKey,
+    idempotent(client, key,
       rows => ({ amount: rows[0].delta, balance: rows[0].balance_after }),
       async () => {
         const txn = await writeTxn(client, {
           accountId, currency: 'game_coins', delta: amount, reason: 'payout',
-          idempotencyKey, coinBucket: 'granted',
+          idempotencyKey: key, coinBucket: 'granted',
         });
         return { amount, balance: txn.balance_after };
       }));
@@ -267,13 +287,15 @@ export async function creditPayout(pool, { accountId, amount, idempotencyKey }) 
 /** 系統贈送遊戲幣。只能動贈送桶（004 的 CHECK 也會擋）。 */
 export async function grantCoins(pool, { accountId, amount, idempotencyKey }) {
   if (!(amount > 0)) throw new WalletError('bad_amount', '贈送額必須為正');
+  assertKey(idempotencyKey);
+  const key = nsKey('grant', idempotencyKey);
   return withTransaction(pool, async client =>
-    idempotent(client, idempotencyKey,
+    idempotent(client, key,
       rows => ({ amount: rows[0].delta, balance: rows[0].balance_after }),
       async () => {
         const txn = await writeTxn(client, {
           accountId, currency: 'game_coins', delta: amount, reason: 'grant',
-          idempotencyKey, coinBucket: 'granted',
+          idempotencyKey: key, coinBucket: 'granted',
         });
         return { amount, balance: txn.balance_after };
       }));

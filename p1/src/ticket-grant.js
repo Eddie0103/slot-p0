@@ -52,10 +52,11 @@ export async function grantTickets(pool, { accountId, source, quantity, campaign
       '發券必須註明觸發的活動設定，否則稽核無法反證這張券與對局無關');
   }
 
+  const key = `ticket_grant:${idempotencyKey}`;
   return withTransaction(pool, async client => {
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [idempotencyKey]);
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [key]);
     const { rows: prior } = await client.query(
-      `SELECT delta, balance_after FROM wallet_txn WHERE idempotency_key = $1`, [idempotencyKey]);
+      `SELECT delta, balance_after FROM wallet_txn WHERE idempotency_key = $1`, [key]);
     if (prior.length) {
       return { replayed: true, quantity: prior[0].delta, balance: prior[0].balance_after };
     }
@@ -65,7 +66,7 @@ export async function grantTickets(pool, { accountId, source, quantity, campaign
           balance_after, ticket_source, ticket_grant_ref)
        VALUES ($1, 'draw_tickets', $2, $3, $4, 0, $5, $6)
        RETURNING balance_after`,
-      [accountId, quantity, source, idempotencyKey, source, String(campaignRef)]);
+      [accountId, quantity, source, key, source, String(campaignRef)]);
     return { replayed: false, quantity, balance: rows[0].balance_after };
   });
 }
@@ -76,10 +77,11 @@ export async function redeemTicketsForPrize(pool, { accountId, source, quantity,
   if (!Number.isInteger(quantity) || quantity <= 0) {
     throw new TicketGrantError('bad_quantity', '扣券張數必須是正整數');
   }
+  const key = `ticket_redeem:${idempotencyKey}`;
   return withTransaction(pool, async client => {
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [idempotencyKey]);
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [key]);
     const { rows: prior } = await client.query(
-      `SELECT delta, balance_after FROM wallet_txn WHERE idempotency_key = $1`, [idempotencyKey]);
+      `SELECT delta, balance_after FROM wallet_txn WHERE idempotency_key = $1`, [key]);
     if (prior.length) {
       return { replayed: true, quantity: -prior[0].delta, balance: prior[0].balance_after };
     }
@@ -88,7 +90,7 @@ export async function redeemTicketsForPrize(pool, { accountId, source, quantity,
          (account_id, currency_type, delta, reason, idempotency_key, balance_after, ticket_source)
        VALUES ($1, 'draw_tickets', $2, 'ticket_redeem_prize', $3, 0, $4)
        RETURNING balance_after`,
-      [accountId, -quantity, idempotencyKey, source]);
+      [accountId, -quantity, key, source]);
     return { replayed: false, quantity, balance: rows[0].balance_after };
   });
 }

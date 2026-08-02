@@ -193,3 +193,31 @@ describe('驗收標準 2：任一時點可查出未使用之付費購買點數',
     assert.equal(b.topupPoints.refundableTwd, 200);
   });
 });
+
+describe('冪等鍵的操作命名空間', () => {
+  test('同一把鍵用在不同操作，不會被誤判成回放', async () => {
+    const acc = await newAccount(pool);
+    await seedGrantedCoins(pool, acc, 1000);
+    const shared = uniqKey('shared');
+
+    const bet = await wallet.placeBet(pool, { accountId: acc, amount: 100, idempotencyKey: shared });
+    assert.equal(bet.replayed, false);
+
+    // 呼叫端不小心拿同一把鍵去派彩，這是不同操作，必須真的執行
+    const payout = await wallet.creditPayout(pool, { accountId: acc, amount: 50, idempotencyKey: shared });
+    assert.equal(payout.replayed, false, '不同操作不得被當成回放');
+    assert.equal(payout.amount, 50);
+
+    const b = await wallet.getBalances(pool, acc);
+    assert.equal(b.gameCoins.granted, 950, '1000 - 100 + 50');
+  });
+
+  test('帳本上存的鍵帶有操作命名空間', async () => {
+    const acc = await newAccount(pool);
+    const k = uniqKey('ns');
+    await wallet.grantCoins(pool, { accountId: acc, amount: 10, idempotencyKey: k });
+    const { rows } = await pool.query(
+      `SELECT idempotency_key FROM wallet_txn WHERE account_id = $1`, [acc]);
+    assert.equal(rows[0].idempotency_key, `grant:${k}`);
+  });
+});
