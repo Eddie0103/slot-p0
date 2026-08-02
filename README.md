@@ -15,6 +15,7 @@
 | `spec-p0.md` | P0 spec：直屏手感原型 |
 | `index.html` | P0 交付物。單一檔案、零依賴，雙擊即開 |
 | `spec-p1.md` | P1 spec：可長大的地基 |
+| `REVIEW-PROMPT.md` | 節點檢查用的提示詞。每個任務結束時找另一個模型獨立審查 |
 | `p1/` | P1 實作。目前完成第七節任務 1（資料模型與 migration） |
 
 `index.html` 刻意留在根目錄：GitHub Pages 由分支根目錄提供服務，移動會讓實機測試的網址失效。
