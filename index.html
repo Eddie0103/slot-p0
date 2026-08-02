@@ -24,8 +24,10 @@
   --gap: 8px;         /* 欄間距，對應參數 reelGapPx */
   --symScale: .8;     /* 符號佔格子比例，對應參數 symbolScale */
 
-  /* 安全區：加到主畫面後狀態列（瀏海／動態島）會蓋在內容上方，頂帶必須讓開 */
-  --safeTop: env(safe-area-inset-top, 0px);
+  /* 安全區：加到主畫面後狀態列（瀏海／動態島）會蓋在內容上方，頂帶必須讓開。
+     這裡預設 0，實際值由 applySafeTop() 實測後以 px 寫入——
+     iOS standalone 下 env(safe-area-inset-top) 常回報 0，不能只靠 CSS。 */
+  --safeTop: 0px;
 
   --bg:#0b0d12;
   --band:#11151d;
@@ -194,7 +196,7 @@ body{
 .overlay{
   position:fixed; inset:0; z-index:50;
   display:flex; flex-direction:column; align-items:center; justify-content:center;
-  text-align:center; padding:8vw; gap:3vw;
+  text-align:center; padding:calc(8vw + var(--safeTop)) 8vw 8vw; gap:3vw;
 }
 #start{ background:#0b0d12; }
 #start h1{ font-size:8vw; margin:0; }
@@ -447,6 +449,31 @@ function buildBoard() {
       stopBase: 0, decelFrom: 0,
     });
   }
+}
+
+/**
+ * 量出狀態列安全區高度並寫進 --safeTop。
+ * 為什麼不能只寫 CSS：iOS 加到主畫面（standalone）且狀態列為半透明時，
+ * env(safe-area-inset-top) 實測回報 0，頂帶就會被時間／訊號／電量蓋住。
+ * 對策：先用探針直接量 env()，量得到就用；量不到而畫面確實鋪滿整個螢幕
+ * （代表狀態列一定疊在內容上），就依螢幕高度推估狀態列高度。
+ */
+function applySafeTop() {
+  const probe = document.createElement('div');
+  probe.style.cssText = 'position:fixed;top:0;left:0;width:1px;visibility:hidden;' +
+                        'pointer-events:none;height:env(safe-area-inset-top,0px)';
+  document.body.appendChild(probe);
+  let inset = Math.round(probe.getBoundingClientRect().height);
+  probe.remove();
+
+  const standalone = navigator.standalone === true ||
+    (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+  const fullBleed = !!window.screen && window.innerHeight >= window.screen.height - 2;
+  if (inset === 0 && standalone && fullBleed) {
+    const h = window.screen.height;
+    inset = h >= 852 ? 59 : (h >= 780 ? 47 : 20);   // 動態島 / 瀏海 / 無瀏海
+  }
+  document.documentElement.style.setProperty('--safeTop', inset + 'px');
 }
 
 /** 版面度量：格高、符號基準邊長、欄間距 */
@@ -828,8 +855,9 @@ elAuto.addEventListener('click', () => {
   if (!spinning) { sfx.tick(); spin(); }
 });
 
-window.addEventListener('resize', layout);
-window.addEventListener('orientationchange', () => setTimeout(layout, 120));
+const relayout = () => { applySafeTop(); layout(); };
+window.addEventListener('resize', relayout);
+window.addEventListener('orientationchange', () => setTimeout(relayout, 120));
 
 /* 「點擊開始」：必須在使用者手勢的 handler 裡 resume()，否則行動瀏覽器第一次 spin 會沒聲音 */
 $('start').addEventListener('click', function onStart() {
@@ -850,6 +878,7 @@ $('start').addEventListener('click', function onStart() {
    ============================================================ */
 buildBoard();
 buildPanel();
+applySafeTop();
 layout();
 drawBalance(balance);
 drawBet();
