@@ -24,6 +24,9 @@
   --gap: 8px;         /* 欄間距，對應參數 reelGapPx */
   --symScale: .8;     /* 符號佔格子比例，對應參數 symbolScale */
 
+  /* 安全區：加到主畫面後狀態列（瀏海／動態島）會蓋在內容上方，頂帶必須讓開 */
+  --safeTop: env(safe-area-inset-top, 0px);
+
   --bg:#0b0d12;
   --band:#11151d;
   --line:#232a37;
@@ -54,11 +57,13 @@ body{
 /* ---------- 三帶版面：頂帶 12dvh / 中帶剩餘 / 底帶 28dvh ---------- */
 #app{ height:100dvh; display:flex; flex-direction:column; }
 
-/* 頂帶：只放餘額與面板開關。刻意不放任何遊戲操作，避免誤觸。 */
+/* 頂帶：只放餘額與面板開關。刻意不放任何遊戲操作，避免誤觸。
+   高度 = 12dvh 可用區 + 狀態列安全區，讓內容整條落在狀態列下方。 */
 #top{
-  height:12dvh; flex:0 0 12dvh;
+  height:calc(12dvh + var(--safeTop)); flex:0 0 calc(12dvh + var(--safeTop));
+  padding-top:var(--safeTop);
   display:flex; align-items:center; justify-content:space-between;
-  padding:0 4vw; background:var(--band);
+  padding-left:4vw; padding-right:4vw; background:var(--band);
   border-bottom:1px solid var(--line);
 }
 #balanceWrap{ display:flex; flex-direction:column; line-height:1.1; }
@@ -67,7 +72,8 @@ body{
 #balance.low{ animation:lowflash .3s linear 2; }
 @keyframes lowflash{ 50%{ color:#ff5a5a; } }
 #panelToggle{
-  font-size:3.4vw; padding:2.2vw 3.4vw; border-radius:2vw;
+  font-size:3.6vw; padding:3.2vw 4.2vw; border-radius:2vw;
+  min-height:44px;                      /* iOS 建議的最小可點擊尺寸 */
   background:#1b2130; color:var(--dim); border:1px solid var(--line);
 }
 
@@ -155,7 +161,7 @@ body{
   overscroll-behavior:contain;          /* 面板捲動不外溢到整頁 */
   touch-action:pan-y;
   background:#151a24; border-bottom:2px solid var(--accent);
-  padding:2vw 3vw 4vw; display:none;
+  padding:calc(2vw + var(--safeTop)) 3vw 4vw; display:none;   /* 面板抬頭同樣避開狀態列 */
   box-shadow:0 2vw 6vw rgba(0,0,0,.6);
 }
 #panel.open{ display:block; }
