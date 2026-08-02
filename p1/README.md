@@ -22,7 +22,7 @@ export PGDATABASE=slot_p1           # 不存在會自動建立
 npm install
 npm run migrate          # 套用所有未套用的 migration
 npm run migrate:status   # 列出已套用與待套用
-npm test                 # 50 項測試
+npm test                 # 67 項測試
 ```
 
 ---
@@ -34,6 +34,7 @@ npm test                 # 50 項測試
 | `migrations/001_wallet_and_ledger.sql` | 帳號、三段式錢包、兌換白名單、交易帳、局帳 |
 | `migrations/002_immutability_and_leg_guards.sql` | append-only 觸發器、兌換腳一致性觸發器 |
 | `migrations/003_coin_bucket.sql` | 遊戲幣桶別（付費衍生／贈送），桶別由來源貨幣強制 |
+| `migrations/004_review_fixes.sql` | 節點檢查（PR #1）的修正：TRUNCATE、退費證據凍結、冪等索引、發券來源 |
 | `src/currency-policy.js` | 允許箭頭的唯一真實來源＋服務層守門函式 |
 | `src/migrate.js` | migration 執行器 |
 | `src/db.js` | 連線設定 |
@@ -41,13 +42,20 @@ npm test                 # 50 項測試
 | `test/policy-sync.test.js` | SQL 與 JS 兩份白名單的防漂移測試 |
 | `test/schema-guards.test.js` | 期限、隔離、append-only、冪等、餘額等約束 |
 | `test/coin-bucket.test.js` | 遊戲幣桶別的資料層與服務層測試 |
+| `test/review-fixes.test.js` | 節點檢查修正的驗證 |
 | `test/migration.test.js` | migration 執行器本身 |
 
 ---
 
 ## 禁止箭頭擋在哪裡
 
-`game_coins → draw_tickets`（CLAUDE.md 第二節）在四個地方被擋，任何一層單獨都足以阻斷：
+`game_coins → draw_tickets`（CLAUDE.md 第二節）在箭頭可能經過的**每一張表**都設了攔阻點，
+防線橫跨整條流程。四層分佈在三張表，各擋不同的資料形狀，彼此互補而非重複：
+
+> 修正紀錄：這裡原本寫「任何一層單獨都足以阻斷」，節點檢查（PR #1）指出那是誇大——
+> 實測只拆掉第 1 層，違法的兌換表頭就寫得進去，2／3／4 層對它毫無作用。
+> 真正互為冗餘的只有 `wallet_txn` 上的第 3＋4 層，也正是「拆掉觸發器」那個測試驗證的那一對。
+
 
 | # | 位置 | 機制 |
 |---|---|---|
@@ -98,4 +106,13 @@ SQL 的 CHECK 約束與 JS 的白名單如果各寫各的，遲早會有人只�
   測試一律用原生 SQL 直接對資料庫送出違法的寫入，驗證它被擋下；
   不提供任何「幫忙組出這條路徑」的程式碼，即使只在測試中使用。
 - **沒有資料庫角色權限設定。** append-only 目前靠觸發器，擁有 DDL 權限者仍可拆掉。
-  正式部署應另外以角色收回 `round`、`wallet_txn` 的 `UPDATE`／`DELETE` 權限。
+  正式部署應另外以角色收回 `round`、`wallet_txn`、`currency_conversion`、`topup_points`
+  的 `UPDATE`／`DELETE`／**`TRUNCATE`** 三種權限。
+  `TRUNCATE` 是 Postgres 可單獨授予的獨立權限，收回前兩者不會一併收掉它——
+  節點檢查（PR #1）就是踩在這一點上：列級觸發器對 `TRUNCATE` 不觸發，
+  修正前一句 `TRUNCATE` 就能清空整份法定稽核帳。已於 004 補上 statement 級觸發器。
+- **餘額欄位還不是由帳本推導。** `game_coins`、`draw_tickets`、`topup_points.balance`
+  可以被直接 UPDATE 而不留 `wallet_txn`。「wallet_txn 是所有幣異動的唯一入口」
+  目前是**服務紀律，不是 schema 保證**——要真正由資料庫強制，唯一的路是任務 2
+  讓餘額由 `wallet_txn` 推導。`topup_points` 的證據欄位已於 004 凍結，
+  但餘額本身仍可被帳外灌入。

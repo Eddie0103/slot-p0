@@ -18,7 +18,7 @@
 
 | 日期 | 範圍 | 審查者 | 審查用 PR | 結果 |
 |---|---|---|---|---|
-| 2026-08-02 | P0 原型 ＋ P1 任務 1 | Fable 5 | [#1](https://github.com/Eddie0103/slot-p0/pull/1) | 待執行 |
+| 2026-08-02 | P0 原型 ＋ P1 任務 1 | Fable 5 | [#1](https://github.com/Eddie0103/slot-p0/pull/1) | 1 必須修 ＋ 4 應該修 ＋ 4 分歧，全部經實測重現後修正（migration 004） |
 
 ---
 

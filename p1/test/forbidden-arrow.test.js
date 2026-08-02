@@ -146,16 +146,16 @@ describe('資料層：wallet_txn 原因與貨幣的搭配', () => {
     // 沒有來源
     await assertRejected(pool,
       `INSERT INTO wallet_txn
-         (account_id, currency_type, delta, reason, idempotency_key, balance_after)
-       VALUES ($1, 'draw_tickets', 5, 'task', $2, 5)`,
+         (account_id, currency_type, delta, reason, idempotency_key, balance_after, ticket_grant_ref)
+       VALUES ($1, 'draw_tickets', 5, 'task', $2, 5, 'campaign-1')`,
       [accountId, `k-${Date.now()}-3`],
       { constraint: 'wallet_txn_ticket_source_required' });
 
     // 用簽到的名義記任務的券
     await assertRejected(pool,
       `INSERT INTO wallet_txn
-         (account_id, currency_type, delta, reason, idempotency_key, balance_after, ticket_source)
-       VALUES ($1, 'draw_tickets', 5, 'daily_checkin', $2, 5, 'task')`,
+         (account_id, currency_type, delta, reason, idempotency_key, balance_after, ticket_source, ticket_grant_ref)
+       VALUES ($1, 'draw_tickets', 5, 'daily_checkin', $2, 5, 'task', 'campaign-1')`,
       [accountId, `k-${Date.now()}-4`],
       { constraint: 'wallet_txn_ticket_reason_matches_source' });
   });
@@ -164,9 +164,9 @@ describe('資料層：wallet_txn 原因與貨幣的搭配', () => {
     for (const [i, source] of DRAW_TICKET_SOURCES.entries()) {
       await pool.query(
         `INSERT INTO wallet_txn
-           (account_id, currency_type, delta, reason, idempotency_key, balance_after, ticket_source)
-         VALUES ($1, 'draw_tickets', 1, $2, $3, 1, $4)`,
-        [accountId, source, `ok-${Date.now()}-${i}`, source]);
+           (account_id, currency_type, delta, reason, idempotency_key, balance_after, ticket_source, ticket_grant_ref)
+         VALUES ($1, 'draw_tickets', 1, $2, $3, 1, $4, $5)`,
+        [accountId, source, `ok-${Date.now()}-${i}`, source, `campaign-${source}`]);
     }
     const { rows } = await pool.query(
       `SELECT count(*)::int AS n FROM wallet_txn
