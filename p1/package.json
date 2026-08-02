@@ -1,0 +1,15 @@
+{
+  "name": "slot-p1-data",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "P1 任務 1：資料模型、migration、禁止箭頭的資料層與服務層防線",
+  "scripts": {
+    "migrate": "node src/migrate.js up",
+    "migrate:status": "node src/migrate.js status",
+    "test": "node --test --test-concurrency=1 \"test/**/*.test.js\""
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  }
+}
