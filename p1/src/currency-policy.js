@@ -20,9 +20,14 @@ export const CURRENCIES = Object.freeze(['topup_points', 'game_coins', 'draw_tic
  * 不在這張表上的組合一律不成立，包含未來新增的貨幣。
  */
 export const ALLOWED_CONVERSIONS = Object.freeze([
-  Object.freeze({ from: 'topup_points', to: 'game_coins' }),
-  Object.freeze({ from: 'draw_tickets', to: 'game_coins' }),
+  // 玩家真的付過錢 → 落付費衍生桶
+  Object.freeze({ from: 'topup_points', to: 'game_coins', targetBucket: 'paid_derived' }),
+  // 促銷贈獎，玩家沒付過錢 → 落贈送桶。理由見 CLAUDE.md 第五節。
+  Object.freeze({ from: 'draw_tickets', to: 'game_coins', targetBucket: 'granted' }),
 ]);
+
+/** 遊戲幣的兩個桶。付費衍生與贈送必須可區分，否則全部進履約保證範圍。 */
+export const COIN_BUCKETS = Object.freeze(['paid_derived', 'granted']);
 
 /**
  * 抽獎券的合法來源。與資料庫 enum draw_ticket_source 及
@@ -66,6 +71,18 @@ export function assertConversionAllowed(from, to) {
   if (isConversionAllowed(from, to)) return;
   const known = FORBIDDEN_CONVERSIONS.find(c => c.from === from && c.to === to);
   throw new ForbiddenConversionError(from, to, known ? known.reason : '不在允許的兌換白名單上。');
+}
+
+/**
+ * 某條兌換箭頭換來的遊戲幣該落在哪個桶。
+ * 桶別由來源貨幣決定，不由呼叫端指定——資料層的觸發器會再驗一次。
+ * @returns {'paid_derived'|'granted'}
+ * @throws {ForbiddenConversionError} 兌換本身就不被允許時
+ */
+export function targetBucketFor(from, to) {
+  const c = ALLOWED_CONVERSIONS.find(x => x.from === from && x.to === to);
+  if (!c) assertConversionAllowed(from, to);
+  return c.targetBucket;
 }
 
 /** 抽獎券來源是否合法。 */

@@ -22,7 +22,7 @@ export PGDATABASE=slot_p1           # 不存在會自動建立
 npm install
 npm run migrate          # 套用所有未套用的 migration
 npm run migrate:status   # 列出已套用與待套用
-npm test                 # 41 項測試
+npm test                 # 50 項測試
 ```
 
 ---
@@ -33,12 +33,14 @@ npm test                 # 41 項測試
 |---|---|
 | `migrations/001_wallet_and_ledger.sql` | 帳號、三段式錢包、兌換白名單、交易帳、局帳 |
 | `migrations/002_immutability_and_leg_guards.sql` | append-only 觸發器、兌換腳一致性觸發器 |
+| `migrations/003_coin_bucket.sql` | 遊戲幣桶別（付費衍生／贈送），桶別由來源貨幣強制 |
 | `src/currency-policy.js` | 允許箭頭的唯一真實來源＋服務層守門函式 |
 | `src/migrate.js` | migration 執行器 |
 | `src/db.js` | 連線設定 |
 | `test/forbidden-arrow.test.js` | 禁止箭頭的資料層與服務層測試 |
 | `test/policy-sync.test.js` | SQL 與 JS 兩份白名單的防漂移測試 |
 | `test/schema-guards.test.js` | 期限、隔離、append-only、冪等、餘額等約束 |
+| `test/coin-bucket.test.js` | 遊戲幣桶別的資料層與服務層測試 |
 | `test/migration.test.js` | migration 執行器本身 |
 
 ---
@@ -58,7 +60,22 @@ npm test                 # 41 項測試
 `assertDrawTicketSourceAllowed()`，兩者都是白名單、預設拒絕。
 
 同一套白名單也擋下 `任何貨幣 → topup_points`。儲值點數可退費、等同現金，
-任何流入路徑都是 CLAUDE.md 第一節紅線 1 的換現出口，即使 spec 沒有明列。
+任何流入路徑都是 CLAUDE.md 第一節紅線 1 的換現出口。
+
+---
+
+## 遊戲幣的桶別
+
+`draw_tickets → game_coins` 換來的幣一律落 `granted`（贈送桶），
+`topup_points → game_coins` 換來的落 `paid_derived`（付費衍生桶）。
+理由見 CLAUDE.md 第五節。
+
+桶別**由來源貨幣決定，不由呼叫端指定**：`wallet_txn_conversion_leg` 觸發器
+會比對兌換表頭的來源貨幣，謊報就丟 `coin_bucket_violation`。
+這件事影響履約保證要提列多少錢，記錯是財務問題不是程式問題，所以不能只靠服務層自律。
+
+`bet` 與 `payout` 落哪個桶尚未決定，屬於任務 2 的消耗順序邏輯，
+資料層只強制「必須說得出桶別」。
 
 ---
 

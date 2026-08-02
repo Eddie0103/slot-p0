@@ -145,8 +145,8 @@ describe('冪等鍵', () => {
        VALUES ($1, 'draw_tickets', -1, 'exchange_out', $2, 0, $3, 'task')`, [acc, key, rows[0].id]);
     await pool.query(
       `INSERT INTO wallet_txn
-         (account_id, currency_type, delta, reason, idempotency_key, balance_after, conversion_id)
-       VALUES ($1, 'game_coins', 500, 'exchange_in', $2, 500, $3)`, [acc, key, rows[0].id]);
+         (account_id, currency_type, delta, reason, idempotency_key, balance_after, conversion_id, coin_bucket)
+       VALUES ($1, 'game_coins', 500, 'exchange_in', $2, 500, $3, 'granted')`, [acc, key, rows[0].id]);
     const { rows: n } = await pool.query(
       'SELECT count(*)::int AS n FROM wallet_txn WHERE idempotency_key = $1', [key]);
     assert.equal(n[0].n, 2);
@@ -183,8 +183,8 @@ describe('餘額不可為負', () => {
   test('wallet_txn 的 balance_after 不可為負', async () => {
     await assertRejected(pool,
       `INSERT INTO wallet_txn
-         (account_id, currency_type, delta, reason, idempotency_key, balance_after)
-       VALUES ($1, 'game_coins', -100, 'bet', $2, -100)`,
+         (account_id, currency_type, delta, reason, idempotency_key, balance_after, coin_bucket)
+       VALUES ($1, 'game_coins', -100, 'bet', $2, -100, 'granted')`,
       [accountId, `neg-${Date.now()}`],
       { constraint: 'wallet_txn_balance_nonneg' });
   });

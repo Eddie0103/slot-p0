@@ -126,14 +126,15 @@ describe('資料層：wallet_txn 原因與貨幣的搭配', () => {
 
       const cases = [
         ['draw_tickets', 5, 'exchange_in', "'task'", '任何貨幣都不得兌換成抽獎券'],
-        ['game_coins', -100, 'exchange_out', 'NULL', '遊戲幣不得成為兌換來源'],
+        ['game_coins', -100, 'exchange_out', 'NULL', '遊戲幣不得成為兌換來源'],  // 桶別由下方補上
         ['topup_points', 100, 'exchange_in', 'NULL', '沒有東西能變回可退費的儲值點數'],
       ];
       for (const [currency, delta, reason, src, why] of cases) {
         const err = await assertRejected(scratch,
           `INSERT INTO wallet_txn
-             (account_id, currency_type, delta, reason, idempotency_key, balance_after, ticket_source)
-           VALUES ($1, '${currency}', ${delta}, '${reason}', $2, 999, ${src})`,
+             (account_id, currency_type, delta, reason, idempotency_key, balance_after, ticket_source, coin_bucket)
+           VALUES ($1, '${currency}', ${delta}, '${reason}', $2, 999, ${src},
+                   ${currency === 'game_coins' ? "'granted'" : 'NULL'})`,
           [acc, `nolegtrig-${currency}`],
           { constraint: 'wallet_txn_reason_matches_currency' });
         assert.ok(err, why);
@@ -187,8 +188,8 @@ describe('資料層：wallet_txn 原因與貨幣的搭配', () => {
        VALUES ($1, 'topup_points', -100, 'exchange_out', $2, 0, $3)`, [acc, key, convId]);
     await pool.query(
       `INSERT INTO wallet_txn
-         (account_id, currency_type, delta, reason, idempotency_key, balance_after, conversion_id)
-       VALUES ($1, 'game_coins', 1000, 'exchange_in', $2, 1000, $3)`, [acc, key, convId]);
+         (account_id, currency_type, delta, reason, idempotency_key, balance_after, conversion_id, coin_bucket)
+       VALUES ($1, 'game_coins', 1000, 'exchange_in', $2, 1000, $3, 'paid_derived')`, [acc, key, convId]);
     const { rows: legs } = await pool.query(
       'SELECT count(*)::int AS n FROM wallet_txn WHERE conversion_id = $1', [convId]);
     assert.equal(legs[0].n, 2);
