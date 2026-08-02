@@ -1,0 +1,1047 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<!-- 直屏全螢幕：viewport-fit=cover 讓 100dvh 涵蓋瀏海／home indicator 區 -->
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<!-- 加到主畫面後以獨立 App 形式全螢幕啟動（無瀏覽器 chrome） -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="P0 Slot">
+<meta name="theme-color" content="#0b0d12">
+<title>P0 直屏老虎機手感原型</title>
+<style>
+/* ============================================================
+   P0 直屏老虎機手感原型
+   單一檔案、零外部依賴、零建置。所有樣式與程式碼皆內嵌。
+   ============================================================ */
+
+:root{
+  /* 由 JS 依實際版面即時寫入的度量 */
+  --cellH: 60px;      /* 單格高度（px，盤面高度 / 5） */
+  --tile: 60px;       /* 符號方塊基準邊長（px，min(欄寬, 格高)） */
+  --gap: 8px;         /* 欄間距，對應參數 reelGapPx */
+  --symScale: .8;     /* 符號佔格子比例，對應參數 symbolScale */
+
+  /* 安全區：加到主畫面後狀態列（瀏海／動態島）與底部 home indicator 可能蓋在
+     內容上，頂帶與底部控制必須讓開。這裡預設 0，實際值由 applySafeInsets()
+     實測後以 px 寫入——iOS standalone 下 env() 常回報 0，不能只靠 CSS。 */
+  --safeTop: 0px;
+  --safeBot: 0px;
+  /* 底帶控制尺寸：同時受寬度與高度約束，寬螢幕（如 iPad 直屏）才不會
+     大到把下注列頂出底帶。SPIN 直徑仍恆 ≥22vw 的硬性下限。 */
+  --spinD: max(23vw, min(30vw, 16dvh));   /* 下限留在 spec 硬性 22vw 之上，不可被高度約束壓破 */
+  --spinR: calc(var(--spinD) / 2);
+  --autoD: min(16vw, 9dvh);
+  --betD:  min(13vw, 7dvh);
+  /* SPIN 圓心距視窗底部的距離。硬性要求 ≤15dvh，這裡取
+     安全區 + 1.5dvh 呼吸空間 + 半徑，讓按鈕盡量貼近底部又不壓到 home indicator。 */
+  --spinCy: calc(var(--safeBot) + 1.5dvh + var(--spinR));
+
+  --bg:#0b0d12;
+  --band:#11151d;
+  --line:#232a37;
+  --fg:#e9edf5;
+  --dim:#8b93a7;
+  --accent:#ff9d2e;
+  --accent2:#2fd18a;
+}
+
+*{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+
+html,body{ margin:0; padding:0; }
+html{ background:var(--bg); }
+
+body{
+  /* position:fixed + inset:0 是 iOS Safari 上最可靠的「整頁不可捲動」寫法 */
+  position:fixed; inset:0;
+  width:100vw; height:100dvh;          /* 用 100dvh，不用 100vh */
+  overflow:hidden;
+  overscroll-behavior:none;             /* 禁止整頁捲動與下拉刷新 */
+  touch-action:manipulation;            /* 消除點擊延遲與雙擊縮放 */
+  background:var(--bg); color:var(--fg);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif;
+  -webkit-user-select:none; user-select:none;
+  -webkit-touch-callout:none;
+}
+
+/* ---------- 三帶版面：頂帶 12dvh / 中帶剩餘 / 底帶 28dvh ---------- */
+#app{ height:100dvh; display:flex; flex-direction:column; }
+
+/* 頂帶：只放餘額與面板開關。刻意不放任何遊戲操作，避免誤觸。
+   高度 = 12dvh 可用區 + 狀態列安全區，讓內容整條落在狀態列下方。 */
+#top{
+  height:calc(12dvh + var(--safeTop)); flex:0 0 calc(12dvh + var(--safeTop));
+  padding-top:var(--safeTop);
+  display:flex; align-items:center; justify-content:space-between;
+  padding-left:4vw; padding-right:4vw; background:var(--band);
+  border-bottom:1px solid var(--line);
+}
+#balanceWrap{ display:flex; flex-direction:column; line-height:1.1; }
+#balanceLabel{ font-size:2.6vw; color:var(--dim); letter-spacing:.15em; }
+#balance{ font-size:6.4vw; font-weight:700; font-variant-numeric:tabular-nums; }
+#balance.low{ animation:lowflash .3s linear 2; }
+@keyframes lowflash{ 50%{ color:#ff5a5a; } }
+#panelToggle{
+  font-size:3.6vw; padding:3.2vw 4.2vw; border-radius:2vw;
+  min-height:44px;                      /* iOS 建議的最小可點擊尺寸 */
+  background:#1b2130; color:var(--dim); border:1px solid var(--line);
+}
+
+/* 中帶：盤面 4 欄 × 5 列 */
+#board{
+  flex:1 1 auto; position:relative;
+  display:flex; align-items:center; justify-content:center;
+  gap:var(--gap); padding:0 3vw;        /* 上下留白由 layout() 算，見該處說明 */
+  overflow:hidden;
+}
+.reel{
+  position:relative; flex:1 1 0; min-width:0;
+  height:calc(var(--cellH) * 5);
+  overflow:hidden; border-radius:2vw;
+  background:#080a0e; box-shadow:inset 0 0 0 1px var(--line);
+}
+.strip{ position:absolute; left:0; right:0; top:0; will-change:transform; }
+.cell{
+  height:var(--cellH);
+  display:flex; align-items:center; justify-content:center;
+}
+.tile{
+  width:calc(var(--tile) * var(--symScale));
+  height:calc(var(--tile) * var(--symScale));
+  border-radius:18%;
+  display:flex; align-items:center; justify-content:center;
+  font-size:calc(var(--tile) * var(--symScale) * .56);
+  line-height:1;
+}
+.tile.win{ box-shadow:0 0 0 max(2px,.6vw) #fff, 0 0 6vw rgba(255,255,255,.35); }
+
+/* 中獎金額提示（純文字，無美術資產） */
+#winLabel{
+  position:absolute; left:0; right:0; top:50%; transform:translateY(-50%); z-index:5;
+  text-align:center; font-size:11vw; font-weight:800;
+  color:#fff; text-shadow:0 0 4vw rgba(0,0,0,.9), 0 .6vw 0 rgba(0,0,0,.6);
+  font-variant-numeric:tabular-nums; pointer-events:none; opacity:0;
+}
+#winLabel.show{ opacity:1; }
+
+/* 底帶：下注 −/＋、SPIN、AUTO 全部落在此帶內 */
+#bottom{
+  height:28dvh; flex:0 0 28dvh; position:relative;
+  background:var(--band); border-top:1px solid var(--line);
+}
+/* 下注列掛在 SPIN 圓上緣之上，兩者不可能重疊 */
+#betRow{
+  position:absolute; bottom:calc(var(--spinCy) + var(--spinR) + 1dvh); left:0; right:0;
+  display:flex; align-items:center; justify-content:center; gap:4vw;
+}
+.betBtn{
+  width:var(--betD); height:var(--betD); border-radius:50%;
+  font-size:calc(var(--betD) * .46); font-weight:700; line-height:1;
+  background:#232b3b; color:var(--fg); border:1px solid var(--line);
+}
+.betBtn:disabled{ opacity:.35; }
+#betWrap{ text-align:center; min-width:calc(var(--betD) * 2); }
+#betLabel{ font-size:calc(var(--betD) * .2); color:var(--dim); letter-spacing:.15em; }
+#bet{ font-size:calc(var(--betD) * .46); font-weight:700; font-variant-numeric:tabular-nums; }
+
+/* SPIN：圓心距視窗底部 --spinCy（≤15dvh），水平置中，直徑 --spinD（≥22vw） */
+#spin{
+  position:absolute; left:50%; bottom:calc(var(--safeBot) + 1.5dvh);
+  transform:translateX(-50%);
+  width:var(--spinD); height:var(--spinD); border-radius:50%;
+  font-size:calc(var(--spinD) * .19); font-weight:800; letter-spacing:.1em;
+  color:#20130a; background:radial-gradient(circle at 35% 30%, #ffd08a, var(--accent) 60%, #d97b12);
+  border:none; box-shadow:0 1vw 3vw rgba(0,0,0,.5);
+}
+#spin:active{ transform:translateX(-50%) scale(.94); }
+#spin.busy{ filter:grayscale(.55) brightness(.75); }
+
+/* AUTO：與 SPIN 同圓心高度，落在底帶內，右側單手拇指可及 */
+#auto{
+  position:absolute; right:7vw; bottom:calc(var(--spinCy) - var(--autoD) / 2);
+  width:var(--autoD); height:var(--autoD); border-radius:50%;
+  font-size:calc(var(--autoD) * .21); font-weight:700;
+  background:#232b3b; color:var(--dim); border:1px solid var(--line);
+}
+#auto.on{ background:var(--accent2); color:#06231a; border-color:var(--accent2); }
+
+/* ---------- 手感調校面板（工具，不是產品，允許很醜） ---------- */
+#panel{
+  position:fixed; left:0; right:0; top:0; z-index:30;
+  max-height:78dvh; overflow-y:auto;
+  overscroll-behavior:contain;          /* 面板捲動不外溢到整頁 */
+  touch-action:pan-y;
+  background:#151a24; border-bottom:2px solid var(--accent);
+  padding:calc(2vw + var(--safeTop)) 3vw 4vw; display:none;   /* 面板抬頭同樣避開狀態列 */
+  box-shadow:0 2vw 6vw rgba(0,0,0,.6);
+}
+#panel.open{ display:block; }
+#panelHead{
+  display:flex; align-items:center; justify-content:space-between;
+  margin-bottom:1.5vw; position:sticky; top:0; background:#151a24; padding:1vw 0;
+}
+#panelHead b{ font-size:3.4vw; }
+.pbtn{
+  font-size:3vw; padding:1.8vw 3vw; border-radius:1.6vw;
+  background:#232b3b; color:var(--fg); border:1px solid var(--line);
+}
+.pbtn.act{ background:var(--accent); color:#20130a; border-color:var(--accent); }
+.prow{
+  display:grid; grid-template-columns:34vw 1fr 13vw; align-items:center;
+  gap:2vw; padding:.7vw 0; border-bottom:1px solid #1d2431;
+}
+.prow label{ font-size:2.7vw; line-height:1.25; }
+.prow label i{ display:block; font-style:normal; color:var(--dim); font-size:2.3vw; }
+.prow output{ font-size:2.9vw; text-align:right; font-variant-numeric:tabular-nums; color:var(--accent); }
+.prow input[type=range]{
+  width:100%; touch-action:none;      /* 讓拖曳一定落在滑桿上，不被當成頁面捲動 */
+  accent-color:var(--accent); height:7vw;
+}
+.prow input[type=checkbox]{ width:7vw; height:7vw; accent-color:var(--accent); }
+.psec{ font-size:2.6vw; color:var(--accent); letter-spacing:.1em; margin:3vw 0 1vw; }
+.pacts{ display:flex; flex-wrap:wrap; gap:2vw; margin-top:3vw; }
+
+/* ---------- 遮罩層 ---------- */
+.overlay{
+  position:fixed; inset:0; z-index:50;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  text-align:center; padding:calc(8vw + var(--safeTop)) 8vw calc(8vw + var(--safeBot)); gap:3vw;
+}
+#start{ background:#0b0d12; }
+#start h1{ font-size:8vw; margin:0; }
+#start p{ font-size:3.4vw; color:var(--dim); margin:0; line-height:1.7; }
+#start .hint{ font-size:3vw; color:#5f6879; }
+
+/* 橫向 → 全螢幕提示遮罩，不做橫屏版面 */
+#rotate{ background:#0b0d12; z-index:60; display:none; }
+#rotate .ico{ font-size:16vh; }
+#rotate p{ font-size:4vh; margin:0; }
+@media (orientation:landscape){
+  #rotate{ display:flex; }
+  #app,#panel,#start,#dump,#toast{ visibility:hidden !important; }
+}
+
+/* 剪貼簿失敗時的手動複製後備 */
+#dump{ background:#000e; z-index:70; display:none; }
+#dumpTitle{ font-size:3vw; color:var(--dim); }
+#dumpActs{ display:flex; gap:3vw; }
+#statsBox{
+  display:grid; grid-template-columns:1fr auto auto; gap:.8vw 4vw;
+  font-size:2.8vw; align-items:center;
+}
+#statsBox .sh{ font-size:2.4vw; color:var(--dim); letter-spacing:.05em; }
+#statsBox .sk{ color:var(--dim); }
+#statsBox .sv{ text-align:right; font-variant-numeric:tabular-nums; color:var(--fg); }
+#statsBox .sv.hot{ color:var(--accent); }
+#dump textarea{
+  width:100%; flex:1 1 auto; font-size:3vw; font-family:ui-monospace,monospace;
+  background:#0d1017; color:var(--fg); border:1px solid var(--line); border-radius:2vw; padding:2vw;
+  -webkit-user-select:text; user-select:text;
+}
+#dump.open{ display:flex; }
+
+#toast{
+  position:fixed; left:50%; bottom:34dvh; transform:translateX(-50%);
+  background:#000c; color:#fff; font-size:3.2vw; padding:2vw 4vw; border-radius:6vw;
+  z-index:80; opacity:0; transition:opacity .18s; pointer-events:none;
+}
+#toast.show{ opacity:1; }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <!-- 頂帶：餘額 + 面板開關（無任何遊戲操作） -->
+  <header id="top">
+    <div id="balanceWrap">
+      <span id="balanceLabel">BALANCE</span>
+      <span id="balance">0</span>
+    </div>
+    <button id="panelToggle" type="button">⚙ 面板</button>
+  </header>
+
+  <!-- 中帶：盤面（4 欄 × 5 列） -->
+  <main id="board">
+    <div id="winLabel"></div>
+  </main>
+
+  <!-- 底帶：下注 −/＋、SPIN、AUTO -->
+  <footer id="bottom">
+    <div id="betRow">
+      <button class="betBtn" id="betDown" type="button">−</button>
+      <div id="betWrap">
+        <div id="betLabel">BET</div>
+        <div id="bet">0</div>
+      </div>
+      <button class="betBtn" id="betUp" type="button">＋</button>
+    </div>
+    <button id="spin" type="button">SPIN</button>
+    <button id="auto" type="button">AUTO</button>
+  </footer>
+</div>
+
+<!-- 手感調校面板 -->
+<section id="panel">
+  <div id="panelHead">
+    <b>手感調校面板</b>
+    <div style="display:flex;gap:2vw">
+      <button class="pbtn" id="muteBtn" type="button">🔊 有聲</button>
+      <button class="pbtn" id="panelClose" type="button">收合</button>
+    </div>
+  </div>
+  <div id="paramList"></div>
+  <div class="psec">符號權重（影響出現機率與賠付倍數）</div>
+  <div id="weightList"></div>
+  <div class="psec">節奏統計（唯讀，不參與結算）</div>
+  <div id="statsBox"></div>
+  <div class="pacts">
+    <button class="pbtn act" id="copyParams" type="button">複製目前參數</button>
+    <button class="pbtn" id="pasteParams" type="button">貼上參數</button>
+    <button class="pbtn" id="exportLog" type="button">匯出紀錄</button>
+    <span id="logCount" style="font-size:2.8vw;color:var(--dim);align-self:center"></span>
+  </div>
+</section>
+
+<!-- 「點擊開始」遮罩：在這次點擊的 handler 裡呼叫 audioContext.resume() -->
+<div id="start" class="overlay">
+  <h1>點擊開始</h1>
+  <p>直屏單手原型<br>點一下即啟動音效</p>
+  <span class="hint">建議：加到主畫面後從主畫面啟動</span>
+</div>
+
+<!-- 橫向提示遮罩 -->
+<div id="rotate" class="overlay">
+  <div class="ico">📱</div>
+  <p>請直向使用</p>
+</div>
+
+<!-- 剪貼簿後備顯示 -->
+<div id="dump" class="overlay">
+  <div id="dumpTitle"></div>
+  <textarea id="dumpText"></textarea>
+  <div id="dumpActs">
+    <button class="pbtn act" id="dumpApply" type="button">套用</button>
+    <button class="pbtn" id="dumpClose" type="button">關閉</button>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+'use strict';
+/* ============================================================
+   1. 參數定義
+   預設值與範圍完全照 spec 的參數表抄錄，順序也一致。
+   ============================================================ */
+const PARAM_DEFS = [
+  { k:'spinUpMs',       t:'起轉加速時長',           min:0,   max:800,  step:1,    def:200,  u:'ms' },
+  { k:'spinConstMs',    t:'等速旋轉時長',           min:100, max:3000, step:1,    def:600,  u:'ms' },
+  { k:'spinDownMs',     t:'單欄減速時長',           min:100, max:1500, step:1,    def:400,  u:'ms' },
+  { k:'reelStaggerMs',  t:'相鄰欄停止間隔',         min:0,   max:800,  step:1,    def:180,  u:'ms' },
+  { k:'bounceRatio',    t:'停止回彈幅度（格高比例）', min:0,  max:0.8,  step:0.01, def:0.25, u:''   },
+  { k:'bounceMs',       t:'回彈時長',               min:0,   max:500,  step:1,    def:160,  u:'ms' },
+  { k:'anticipationOn', t:'是否啟用期待感停頓',      bool:true,                    def:true         },
+  { k:'anticipationMs', t:'差一個就中時的額外停頓',  min:0,   max:2500, step:1,    def:500,  u:'ms' },
+  { k:'winFlashMs',     t:'中獎符號單次閃爍時長',    min:100, max:1000, step:1,    def:300,  u:'ms' },
+  { k:'winFlashCount',  t:'閃爍次數',               min:1,   max:8,    step:1,    def:3,    u:'次' },
+  { k:'winCountUpMs',   t:'得分數字滾動時長',        min:0,   max:3000, step:1,    def:800,  u:'ms' },
+  { k:'autoIntervalMs', t:'AUTO 每次間隔',          min:0,   max:2000, step:1,    def:400,  u:'ms' },
+  { k:'symbolScale',    t:'符號佔格子比例',          min:0.5, max:1.0,  step:0.01, def:0.8,  u:''   },
+  { k:'reelGapPx',      t:'欄間距',                 min:0,   max:24,   step:1,    def:8,    u:'px' },
+];
+
+/** 目前生效的參數，所有動畫每一幀都直接讀這個物件 → 改 slider 立即生效 */
+const P = {};
+PARAM_DEFS.forEach(d => { P[d.k] = d.def; });
+
+/* 6 種符號：純色圓角矩形 + 單一 Unicode 字元。零美術資產。 */
+const SYMBOLS = [
+  { id:'cherry', ch:'🍒', color:'#c2333a' },
+  { id:'lemon',  ch:'🍋', color:'#b08a1c' },
+  { id:'bell',   ch:'🔔', color:'#2b7f5c' },
+  { id:'star',   ch:'⭐', color:'#2f5fae' },
+  { id:'gem',    ch:'💎', color:'#5f47a8' },
+  { id:'coin',   ch:'💰', color:'#a13a7c' },
+];
+/* 權重可調（spec「6 種符號，各自權重可調」），預設值與範圍 spec 未指定，此處自訂 */
+const WEIGHT_MIN = 1, WEIGHT_MAX = 50;
+const W = [30, 25, 20, 12, 8, 5];
+
+/* 版面常數（spec 參數表未列出，固定不可調） */
+const COLS = 4, ROWS = 5;
+const CELLS_PER_STRIP = ROWS + 2;   // 上下各留一格緩衝
+const V_MAX = 20;                   // 等速期捲動速度（格/秒）
+const MIN_STOP_TRAVEL = ROWS + 1;   // 減速期最少前進格數，確保結果格尚未被畫出來
+
+/* ============================================================
+   2. 遊戲狀態（餘額就是一個 JS 變數，沒有錢包沒有後端）
+   ============================================================ */
+const BET_STEPS = [1, 2, 5, 10, 20, 50, 100];
+let betIdx = 3;                     // 預設下注 10
+let balance = 1000;
+let spinning = false;
+let autoOn = false;
+let autoTimer = null;
+let muted = false;
+const records = [];                 // 每次 spin 一筆，存在記憶體陣列
+
+/* ============================================================
+   3. DOM 參照
+   ============================================================ */
+const $ = id => document.getElementById(id);
+const elBoard = $('board'), elBalance = $('balance'), elBet = $('bet');
+const elSpin = $('spin'), elAuto = $('auto'), elWinLabel = $('winLabel');
+const elPanel = $('panel'), elToast = $('toast');
+
+/* ============================================================
+   4. 音效：Web Audio 合成（OscillatorNode + GainNode），零外部音檔
+   ============================================================ */
+let actx = null;
+
+/** 排一顆單音；t0 省略時代表立刻發聲 */
+function tone(f0, f1, dur, type, peak, t0) {
+  if (!actx || muted) return;
+  const t = (t0 === undefined ? actx.currentTime : t0);
+  const osc = actx.createOscillator();
+  const gain = actx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(f0, t);
+  if (f1 !== f0) osc.frequency.exponentialRampToValueAtTime(Math.max(1, f1), t + dur);
+  gain.gain.setValueAtTime(0.0001, t);
+  gain.gain.exponentialRampToValueAtTime(peak, t + 0.008);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  osc.connect(gain).connect(actx.destination);
+  osc.start(t);
+  osc.stop(t + dur + 0.03);
+}
+const sfx = {
+  start()      { tone(330, 660, 0.12, 'triangle', 0.16); },              // 音效已就緒的確認聲
+  spin()       { tone(160, 520, 0.18, 'sawtooth', 0.13); },              // 起轉
+  reelStop(i)  { tone(430 + i * 80, 260 + i * 80, 0.07, 'square', 0.14); }, // 每欄停止（逐欄升調）
+  win()        {                                                         // 中獎
+    if (!actx || muted) return;
+    const base = actx.currentTime;
+    [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => tone(f, f, 0.16, 'triangle', 0.12, base + i * 0.085));
+  },
+  tick()       { tone(1400, 1400, 0.03, 'triangle', 0.07); },            // AUTO tick
+};
+
+/* ============================================================
+   5. 轉輪
+   每欄維持一個「位置 pos」（單位：格）。畫面上第 r 列顯示序號 base-r-1 的符號，
+   整條 strip 依小數部分平移，即可做出無限捲動。
+   ============================================================ */
+const reels = [];
+
+function totalWeight() { return W.reduce((a, b) => a + b, 0); }
+
+/** 依權重擲出一個符號索引 */
+function rollSymbol() {
+  let x = Math.random() * totalWeight();
+  for (let i = 0; i < W.length; i++) { x -= W[i]; if (x < 0) return i; }
+  return W.length - 1;
+}
+
+/** 取得某欄第 idx 個序號的符號；沒生過就即時生一個並快取 */
+function symAt(reel, idx) {
+  let s = reel.cache.get(idx);
+  if (s === undefined) { s = rollSymbol(); reel.cache.set(idx, s); }
+  return s;
+}
+
+function buildBoard() {
+  for (let i = 0; i < COLS; i++) {
+    const reelEl = document.createElement('div');
+    reelEl.className = 'reel';
+    const strip = document.createElement('div');
+    strip.className = 'strip';
+    const cells = [];
+    for (let k = 0; k < CELLS_PER_STRIP; k++) {
+      const cell = document.createElement('div');
+      cell.className = 'cell';
+      const tile = document.createElement('div');
+      tile.className = 'tile';
+      cell.appendChild(tile);
+      strip.appendChild(cell);
+      cells.push(tile);
+    }
+    reelEl.appendChild(strip);
+    elBoard.appendChild(reelEl);
+    reels.push({
+      i, el: reelEl, strip, cells,
+      shown: new Array(CELLS_PER_STRIP).fill(-1),
+      pos: 0, base: null, phase: 'idle', t0: 0,
+      cache: new Map(), target: null,
+      stopBase: 0, decelFrom: 0,
+    });
+  }
+}
+
+/**
+ * 量出上下安全區並寫進 --safeTop / --safeBot。
+ * 為什麼不能只寫 CSS：iOS 加到主畫面（standalone）且狀態列為半透明時，
+ * env(safe-area-inset-*) 實測回報 0，頂帶就會被時間／訊號／電量蓋住。
+ * 對策：先用探針直接量 env()，量得到就用；量不到而畫面確實鋪滿整個螢幕
+ * （代表狀態列與 home indicator 一定疊在內容上），就依螢幕高度推估。
+ * 反之若 iOS 已自行把網頁縮排到安全區內（畫面比螢幕矮），兩者都是 0，
+ * 此時底部那條黑邊是系統保留區，網頁畫不到，也不需要再讓位。
+ */
+function applySafeInsets() {
+  const probe = document.createElement('div');
+  probe.style.cssText = 'position:fixed;top:0;left:0;width:1px;visibility:hidden;pointer-events:none';
+  document.body.appendChild(probe);
+  const measure = side => {
+    probe.style.height = 'env(safe-area-inset-' + side + ',0px)';
+    return Math.round(probe.getBoundingClientRect().height);
+  };
+  let top = measure('top'), bot = measure('bottom');
+  probe.remove();
+
+  const standalone = navigator.standalone === true ||
+    (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+  const fullBleed = !!window.screen && window.innerHeight >= window.screen.height - 2;
+  if (standalone && fullBleed) {
+    const h = window.screen.height;
+    if (top === 0) top = h >= 852 ? 59 : (h >= 780 ? 47 : 20);   // 動態島 / 瀏海 / 無瀏海
+    if (bot === 0) bot = h >= 780 ? 34 : 0;                      // 有無 home indicator
+  }
+  const root = document.documentElement.style;
+  root.setProperty('--safeTop', top + 'px');
+  root.setProperty('--safeBot', bot + 'px');
+}
+
+/** 版面度量：格高、符號基準邊長、欄間距 */
+let cellH = 60;                 // 目前格高（px），renderReel 每幀用它換算平移量
+function layout() {
+  const style = getComputedStyle(elBoard);
+  const padX = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+  const padY = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+  const gap = P.reelGapPx;
+  const innerW = elBoard.clientWidth - padX;
+  const innerH = elBoard.clientHeight - padY;
+  const colW = (innerW - gap * (COLS - 1)) / COLS;
+
+  // 格高：讓「首尾兩列與中帶上下邊界的留白」等於「列與列之間的留白」。
+  // 若直接用 innerH/5，首尾留白只有格間留白的一半，第一列與最後一列
+  // 會緊貼邊界，看起來像被切掉。
+  // 令符號邊長 = t、格高 = c，格間留白 = c - t，首尾各留 (c - t)/2 額外空間：
+  //   innerH = 5c + (c - t) = 6c - t
+  const s = P.symbolScale;
+  let c = (innerH + colW * s) / 6;      // 先假設符號邊長受欄寬限制（t = colW * s）
+  if (c < colW) c = innerH / (6 - s);   // 反之改由格高限制（t = c * s）
+  cellH = c;
+
+  const root = document.documentElement.style;
+  root.setProperty('--gap', gap + 'px');
+  root.setProperty('--cellH', cellH + 'px');
+  root.setProperty('--tile', Math.max(8, Math.min(colW, cellH)) + 'px');
+  root.setProperty('--symScale', s);
+}
+
+// 中帶尺寸只要變動就重算（iOS 有時會在啟動後才把安全區／視窗高度補上，
+// 只在載入時量一次會量到還沒定案的值）
+if (window.ResizeObserver) {
+  let lastW = 0, lastH = 0;
+  new ResizeObserver(() => {
+    const w = elBoard.clientWidth, h = elBoard.clientHeight;
+    if (w === lastW && h === lastH) return;
+    lastW = w; lastH = h;
+    layout();
+  }).observe(elBoard);
+}
+
+/** 把某欄畫到目前 pos */
+function renderReel(r) {
+  const base = Math.floor(r.pos);
+  const frac = r.pos - base;
+  r.strip.style.transform = 'translate3d(0,' + ((frac - 1) * cellH) + 'px,0)';
+  if (base !== r.base) {
+    r.base = base;
+    for (let k = 0; k < CELLS_PER_STRIP; k++) {
+      const s = symAt(r, base - k);
+      if (r.shown[k] !== s) {
+        r.shown[k] = s;
+        const tile = r.cells[k];
+        tile.style.background = SYMBOLS[s].color;
+        tile.textContent = SYMBOLS[s].ch;
+      }
+    }
+  }
+}
+
+/* ---- 主迴圈：所有時間參數每一幀重新讀 P，因此調整 slider 立即生效 ---- */
+let lastT = 0;
+function frame(now) {
+  const dt = lastT ? Math.min(0.05, (now - lastT) / 1000) : 0;
+  lastT = now;
+  for (let i = 0; i < COLS; i++) { stepReel(reels[i], now, dt); renderReel(reels[i]); }
+  requestAnimationFrame(frame);
+}
+
+function stepReel(r, now, dt) {
+  if (r.phase === 'idle' || r.phase === 'stopped') return;
+  const el = now - r.t0;
+
+  if (r.phase === 'accel') {
+    // 線性加速到 V_MAX；以積分推進位置，中途改參數也不會跳動
+    const d = P.spinUpMs;
+    const v = V_MAX * (d > 0 ? Math.min(1, el / d) : 1);
+    r.pos += v * dt;
+    if (el >= d) { r.phase = 'const'; r.t0 = now; }
+    return;
+  }
+
+  if (r.phase === 'const') {
+    r.pos += V_MAX * dt;
+    // 等速時長 + 逐欄延遲；最後一欄在「差一個就中」時追加期待感停頓
+    let dur = P.spinConstMs + r.i * P.reelStaggerMs;
+    if (r.i === COLS - 1 && anticipationArmed && P.anticipationOn) dur += P.anticipationMs;
+    if (el >= dur) {
+      // 進入減速：決定停在哪個整數格，並把該欄的結果寫進符號快取
+      const glide = V_MAX * (P.spinDownMs / 1000) / 2;   // easeOutQuad 平均速度 = V_MAX / 2
+      r.decelFrom = r.pos;
+      r.stopBase = Math.ceil(r.pos + Math.max(glide, MIN_STOP_TRAVEL));
+      for (let row = 0; row < ROWS; row++) r.cache.set(r.stopBase - row - 1, r.target[row]);
+      r.phase = 'decel'; r.t0 = now;
+    }
+    return;
+  }
+
+  if (r.phase === 'decel') {
+    const d = Math.max(1, P.spinDownMs);
+    const u = Math.min(1, el / d);
+    const e = 1 - (1 - u) * (1 - u);                     // easeOutQuad
+    const target = r.stopBase + P.bounceRatio;           // 先衝過頭，回彈交給下一階段
+    r.pos = r.decelFrom + (target - r.decelFrom) * e;
+    if (u >= 1) {
+      r.pos = target;
+      sfx.reelStop(r.i);                                 // 每欄停止音
+      if (P.bounceMs > 0 && P.bounceRatio > 0) { r.phase = 'bounce'; r.t0 = now; }
+      else { finishReel(r); }
+    }
+    return;
+  }
+
+  if (r.phase === 'bounce') {
+    const d = Math.max(1, P.bounceMs);
+    const u = Math.min(1, el / d);
+    // 衰減振盪：u=0 時剛好等於衝過頭的量，u=1 歸零，中間會小幅回壓
+    r.pos = r.stopBase + P.bounceRatio * (1 - u) * Math.cos(u * Math.PI * 1.5);
+    if (u >= 1) finishReel(r);
+  }
+}
+
+function finishReel(r) {
+  r.pos = r.stopBase;
+  r.phase = 'stopped';
+  // 清掉早已捲過去的快取，避免記憶體無限成長
+  for (const k of r.cache.keys()) if (k < r.stopBase - 12) r.cache.delete(k);
+  if (reels.every(x => x.phase === 'stopped')) onAllStopped();
+}
+
+/* ============================================================
+   6. 一次 spin 的流程
+   ============================================================ */
+let grid = null;                 // grid[欄][列] = 符號索引
+let anticipationArmed = false;   // 前三欄已湊出「差一個就中」
+let pending = null;              // 本次 spin 的紀錄草稿
+
+function spin() {
+  if (spinning) return;
+  if (balance < currentBet()) {
+    elBalance.classList.remove('low'); void elBalance.offsetWidth; elBalance.classList.add('low');
+    stopAuto();
+    return;
+  }
+  spinning = true;
+  elSpin.classList.add('busy');
+  elWinLabel.classList.remove('show');
+  clearWinMarks();
+
+  const bet = currentBet();
+  balance -= bet;
+  drawBalance(balance);
+
+  // 結果先擲定，動畫只是把它演出來
+  grid = [];
+  for (let c = 0; c < COLS; c++) {
+    const col = [];
+    for (let row = 0; row < ROWS; row++) col.push(rollSymbol());
+    grid.push(col);
+  }
+  // 「差一個就中」：前三欄有任一列同符號，第四欄還沒停
+  anticipationArmed = false;
+  for (let row = 0; row < ROWS; row++) {
+    if (grid[0][row] === grid[1][row] && grid[1][row] === grid[2][row]) { anticipationArmed = true; break; }
+  }
+
+  pending = { ts: new Date().toISOString(), bet, params: snapshot() };
+
+  const now = performance.now();
+  reels.forEach((r, i) => { r.target = grid[i]; r.phase = 'accel'; r.t0 = now; });
+  sfx.spin();
+}
+
+function onAllStopped() {
+  // 中獎判定：任一列出現 4 個相同符號。只有這一種規則，沒有 payline 系統。
+  const wins = [];
+  let total = 0;
+  for (let row = 0; row < ROWS; row++) {
+    const s = grid[0][row];
+    if (grid[1][row] === s && grid[2][row] === s && grid[3][row] === s) {
+      // 賠付 = 符號機率的倒數（總權重 / 該符號權重）× 下注額
+      const pay = Math.round(pending.bet * (totalWeight() / W[s]));
+      wins.push({ row, sym: s, pay });
+      total += pay;
+    }
+  }
+
+  pending.board = boardRows();
+  pending.won = wins.length > 0;
+  pending.winAmount = total;
+  records.push(pending);
+  updateLogCount();
+
+  if (!wins.length) { endSpin(); return; }
+
+  sfx.win();
+  const flashMs = P.winFlashMs, flashCount = P.winFlashCount, countMs = P.winCountUpMs;
+
+  // 中獎符號閃爍（列 r 對應 strip 的第 r+1 格）
+  wins.forEach(w => {
+    reels.forEach(r => {
+      const tile = r.cells[w.row + 1];
+      tile.classList.add('win');
+      if (tile.animate) {
+        tile.animate([{ opacity: 1 }, { opacity: 0.15 }, { opacity: 1 }],
+                     { duration: flashMs, iterations: flashCount });
+      }
+    });
+  });
+
+  // 得分數字滾動：餘額與 +N 同時往上跑
+  const from = balance, to = balance + total;
+  elWinLabel.classList.add('show');
+  const t0 = performance.now();
+  (function countUp(now) {
+    const u = countMs > 0 ? Math.min(1, (now - t0) / countMs) : 1;
+    const cur = from + (to - from) * u;
+    drawBalance(cur);
+    elWinLabel.textContent = '+' + Math.round(total * u);
+    if (u < 1) requestAnimationFrame(countUp);
+    else {
+      balance = to; drawBalance(balance);
+      setTimeout(() => { clearWinMarks(); elWinLabel.classList.remove('show'); endSpin(); },
+                 Math.max(0, flashMs * flashCount - countMs));
+    }
+  })(t0);
+}
+
+function endSpin() {
+  spinning = false;
+  elSpin.classList.remove('busy');
+  if (autoOn) {
+    if (balance < currentBet()) { stopAuto(); return; }
+    autoTimer = setTimeout(() => { sfx.tick(); spin(); }, P.autoIntervalMs);
+  }
+}
+
+function clearWinMarks() {
+  reels.forEach(r => r.cells.forEach(t => t.classList.remove('win')));
+}
+
+/** 以「列」為單位輸出目前結果盤面（方便事後人眼閱讀） */
+function boardRows() {
+  const out = [];
+  for (let row = 0; row < ROWS; row++) {
+    const line = [];
+    for (let c = 0; c < COLS; c++) line.push(SYMBOLS[grid[c][row]].id);
+    out.push(line);
+  }
+  return out;
+}
+
+/* ============================================================
+   7. 下注 / AUTO
+   ============================================================ */
+function currentBet() { return BET_STEPS[betIdx]; }
+function drawBalance(v) { elBalance.textContent = Math.round(v); }
+function drawBet() {
+  elBet.textContent = currentBet();
+  $('betDown').disabled = betIdx === 0;
+  $('betUp').disabled = betIdx === BET_STEPS.length - 1;
+}
+function stopAuto() {
+  autoOn = false;
+  elAuto.classList.remove('on');
+  if (autoTimer) { clearTimeout(autoTimer); autoTimer = null; }
+}
+
+/* ============================================================
+   8. 手感調校面板
+   ============================================================ */
+function snapshot() {
+  const o = {};
+  PARAM_DEFS.forEach(d => { o[d.k] = P[d.k]; });
+  o.symbolWeights = {};
+  SYMBOLS.forEach((s, i) => { o.symbolWeights[s.id] = W[i]; });
+  return o;
+}
+
+const paramCtl = {};   // 參數 key -> 回寫用的控制項
+const weightCtl = [];  // 符號索引 -> 回寫用的控制項
+
+function buildPanel() {
+  const list = $('paramList');
+  PARAM_DEFS.forEach(d => {
+    const row = document.createElement('div');
+    row.className = 'prow';
+    const lab = document.createElement('label');
+    lab.innerHTML = '<b>' + d.k + '</b><i>' + d.t + '</i>';
+    row.appendChild(lab);
+
+    if (d.bool) {
+      const box = document.createElement('input');
+      box.type = 'checkbox'; box.checked = d.def;
+      const out = document.createElement('output');
+      out.textContent = d.def ? 'on' : 'off';
+      const sync = () => { P[d.k] = box.checked; out.textContent = box.checked ? 'on' : 'off'; };
+      box.addEventListener('change', sync);   // 即時生效
+      paramCtl[d.k] = { set: v => { box.checked = !!v; sync(); } };
+      row.appendChild(box); row.appendChild(out);
+    } else {
+      const rng = document.createElement('input');
+      rng.type = 'range'; rng.min = d.min; rng.max = d.max; rng.step = d.step; rng.value = d.def;
+      const out = document.createElement('output');
+      const show = v => out.textContent = (d.step < 1 ? Number(v).toFixed(2) : v) + (d.u || '');
+      show(d.def);
+      const sync = () => {
+        P[d.k] = parseFloat(rng.value);        // 即時生效，不需重轉、不需重載
+        show(rng.value);
+        if (d.k === 'reelGapPx' || d.k === 'symbolScale') layout();
+      };
+      rng.addEventListener('input', sync);
+      paramCtl[d.k] = { set: v => {            // 夾在 spec 定義的範圍內，超出就取邊界
+        rng.value = Math.min(d.max, Math.max(d.min, v));
+        sync();
+      } };
+      row.appendChild(rng); row.appendChild(out);
+    }
+    list.appendChild(row);
+  });
+
+  const wlist = $('weightList');
+  SYMBOLS.forEach((s, i) => {
+    const row = document.createElement('div');
+    row.className = 'prow';
+    const lab = document.createElement('label');
+    lab.innerHTML = '<b>' + s.ch + ' ' + s.id + '</b><i>賠率 ×<span class="mul"></span></i>';
+    const rng = document.createElement('input');
+    rng.type = 'range'; rng.min = WEIGHT_MIN; rng.max = WEIGHT_MAX; rng.step = 1; rng.value = W[i];
+    const out = document.createElement('output');
+    out.textContent = W[i];
+    const sync = () => {
+      W[i] = parseInt(rng.value, 10);          // 即時生效
+      out.textContent = rng.value;
+      refreshMultipliers();
+    };
+    rng.addEventListener('input', sync);
+    weightCtl[i] = { set: v => {
+      rng.value = Math.min(WEIGHT_MAX, Math.max(WEIGHT_MIN, Math.round(v)));
+      sync();
+    } };
+    row.appendChild(lab); row.appendChild(rng); row.appendChild(out);
+    wlist.appendChild(row);
+  });
+  refreshMultipliers();
+}
+
+/**
+ * 把一份參數 JSON 套進面板（「複製目前參數」的反向操作）。
+ * 只認得 PARAM_DEFS 與 symbolWeights，其餘鍵忽略；數值一律夾在 spec 範圍內。
+ */
+function applyParams(text) {
+  let o;
+  try { o = JSON.parse(text); } catch (e) { toast('不是合法 JSON'); return false; }
+  if (!o || typeof o !== 'object') { toast('不是合法 JSON'); return false; }
+  let n = 0;
+  PARAM_DEFS.forEach(d => {
+    if (o[d.k] === undefined) return;
+    const v = d.bool ? !!o[d.k] : parseFloat(o[d.k]);
+    if (!d.bool && !isFinite(v)) return;
+    paramCtl[d.k].set(v); n++;
+  });
+  if (o.symbolWeights && typeof o.symbolWeights === 'object') {
+    SYMBOLS.forEach((sym, i) => {
+      const v = parseFloat(o.symbolWeights[sym.id]);
+      if (isFinite(v)) { weightCtl[i].set(v); n++; }
+    });
+  }
+  layout();
+  toast(n ? '已套用 ' + n + ' 項參數' : '沒有可辨識的參數');
+  return n > 0;
+}
+
+function refreshMultipliers() {
+  const nodes = $('weightList').querySelectorAll('.mul');
+  const tw = totalWeight();
+  nodes.forEach((n, i) => { n.textContent = (tw / W[i]).toFixed(1); });
+}
+
+function updateLogCount() {
+  $('logCount').textContent = records.length + ' 筆';
+  renderStats();
+}
+
+/** 從一段紀錄算出節奏指標。純唯讀統計，不參與任何結算。 */
+function statsOf(list) {
+  const n = list.length;
+  if (!n) return null;
+  let wins = 0, staked = 0, paid = 0, maxDry = 0, dry = 0;
+  for (const r of list) {
+    staked += r.bet; paid += r.winAmount;
+    if (r.won) { wins++; if (dry > maxDry) maxDry = dry; dry = 0; }
+    else dry++;
+  }
+  if (dry > maxDry) maxDry = dry;
+  return { n, wins, hit: wins / n, gap: wins ? n / wins : 0,
+           maxDry, cur: dry, rtp: staked ? paid / staked : 0 };
+}
+
+const STAT_WINDOW = 100;   // 「最近」視窗大小；調完權重後約這麼多把就會收斂到新節奏
+const STAT_ROWS = [
+  ['中獎率',        s => (s.hit * 100).toFixed(1) + '%'],
+  ['平均幾把中一次', s => s.wins ? s.gap.toFixed(2) : '—'],
+  ['最長連續未中',   s => s.maxDry + ' 把'],
+  ['目前連續未中',   s => s.cur + ' 把'],
+  ['實測回收率',     s => (s.rtp * 100).toFixed(1) + '%'],
+];
+
+function renderStats() {
+  const box = $('statsBox');
+  const all = statsOf(records);
+  if (!all) { box.innerHTML = '<span class="sk">尚無紀錄，轉幾把就會出現</span>'; return; }
+  const recent = statsOf(records.slice(-STAT_WINDOW));
+  const cells = ['<span class="sh"></span>',
+                 '<span class="sh sv">最近 ' + recent.n + '</span>',
+                 '<span class="sh sv">全部 ' + all.n + '</span>'];
+  STAT_ROWS.forEach(([label, fmt]) => {
+    cells.push('<span class="sk">' + label + '</span>');
+    cells.push('<span class="sv hot">' + fmt(recent) + '</span>');
+    cells.push('<span class="sv">' + fmt(all) + '</span>');
+  });
+  box.innerHTML = cells.join('');
+}
+
+/* ---- 輸出：優先寫剪貼簿，失敗則開後備視窗讓使用者手動複製 ---- */
+/** 開啟全螢幕文字框：editable=false 供手動複製，true 供貼上參數 */
+function openDump(text, editable, title) {
+  const ta = $('dumpText');
+  ta.value = text;
+  ta.readOnly = !editable;
+  $('dumpApply').style.display = editable ? '' : 'none';
+  $('dumpTitle').textContent = title;
+  $('dump').classList.add('open');
+  if (editable) ta.focus(); else ta.select();
+}
+
+function output(text, okMsg) {
+  const fallback = () => {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      if (ok) { toast(okMsg); return; }
+    } catch (e) { /* 忽略，走手動複製 */ }
+    openDump(text, false, '無法寫入剪貼簿，請長按選取複製');
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => toast(okMsg)).catch(fallback);
+  } else fallback();
+}
+
+let toastTimer = null;
+function toast(msg) {
+  elToast.textContent = msg;
+  elToast.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => elToast.classList.remove('show'), 1300);
+}
+
+/* ============================================================
+   9. 事件綁定
+   ============================================================ */
+$('panelToggle').addEventListener('click', () => {
+  elPanel.classList.toggle('open');
+  if (elPanel.classList.contains('open')) renderStats();
+});
+$('panelClose').addEventListener('click', () => elPanel.classList.remove('open'));
+$('muteBtn').addEventListener('click', () => {
+  muted = !muted;
+  $('muteBtn').textContent = muted ? '🔇 靜音' : '🔊 有聲';
+  $('muteBtn').classList.toggle('act', muted);
+});
+$('copyParams').addEventListener('click', () => {
+  output(JSON.stringify(snapshot(), null, 2), '參數已複製');
+});
+$('exportLog').addEventListener('click', () => {
+  output(JSON.stringify({ exportedAt: new Date().toISOString(), count: records.length, records }, null, 2),
+         '紀錄已複製（' + records.length + ' 筆）');
+});
+$('pasteParams').addEventListener('click', () => {
+  openDump('', true, '貼上「複製目前參數」產生的 JSON，再按套用');
+});
+$('dumpApply').addEventListener('click', () => {
+  if (applyParams($('dumpText').value)) $('dump').classList.remove('open');
+});
+$('dumpClose').addEventListener('click', () => $('dump').classList.remove('open'));
+
+$('betDown').addEventListener('click', () => { if (betIdx > 0) { betIdx--; drawBet(); } });
+$('betUp').addEventListener('click', () => { if (betIdx < BET_STEPS.length - 1) { betIdx++; drawBet(); } });
+elSpin.addEventListener('click', () => spin());
+elAuto.addEventListener('click', () => {
+  if (autoOn) { stopAuto(); return; }
+  autoOn = true;
+  elAuto.classList.add('on');
+  if (!spinning) { sfx.tick(); spin(); }
+});
+
+const relayout = () => { applySafeInsets(); layout(); };
+window.addEventListener('resize', relayout);
+window.addEventListener('orientationchange', () => setTimeout(relayout, 120));
+
+/* 「點擊開始」：必須在使用者手勢的 handler 裡 resume()，否則行動瀏覽器第一次 spin 會沒聲音 */
+$('start').addEventListener('click', function onStart() {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (AC) {
+      actx = new AC();
+      const r = actx.resume();
+      // 同一次點擊就發出確認聲：冷啟動到第一次聽到音效只需這一次點擊
+      if (r && r.then) r.then(() => sfx.start()); else sfx.start();
+    }
+  } catch (e) { /* 沒有 Web Audio 也要能玩，只是沒聲音 */ }
+  $('start').style.display = 'none';
+}, { once: true });
+
+/* ============================================================
+   10. 啟動
+   ============================================================ */
+buildBoard();
+buildPanel();
+applySafeInsets();
+layout();
+drawBalance(balance);
+drawBet();
+updateLogCount();
+reels.forEach(renderReel);
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
